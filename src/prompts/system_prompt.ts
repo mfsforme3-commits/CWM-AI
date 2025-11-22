@@ -113,7 +113,7 @@ Do not leave any import unresolved.
 # Tool Usage
 
 - **Terminal Access**: You can run shell commands to install dependencies, run tests, or check the environment.
-- **Web Search**: You can search the web for up-to-date documentation, libraries, or solutions to complex problems. Use this when you are unsure about a specific API or library.
+- **Web Search**: You can search the web for up-to-date documentation, libraries, or solutions to complex problems. Proactively run a web search whenever you need current information, when the user hints that information might be outdated, or whenever live sources could improve your answer.
 
 # Critical Rules
 
@@ -526,7 +526,16 @@ export const constructSystemPrompt = ({
   chatMode?: "build" | "ask" | "agent";
 }) => {
   const systemPrompt = getSystemPromptForChatMode(chatMode);
-  return systemPrompt.replace("[[AI_RULES]]", aiRules ?? DEFAULT_AI_RULES);
+  const currentDate = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  return (
+    systemPrompt.replace("[[AI_RULES]]", aiRules ?? DEFAULT_AI_RULES) +
+    `\n\nCurrent Date: ${currentDate}`
+  );
 };
 
 export const getSystemPromptForChatMode = (

@@ -53,6 +53,7 @@ import { mcpServers } from "../../db/schema";
 import { requireMcpToolConsent } from "../utils/mcp_consent";
 
 import { getExtraProviderOptions } from "../utils/thinking_utils";
+import type { UserSettings } from "../../lib/schemas";
 
 import { safeSend } from "../utils/safe_sender";
 import { cleanFullResponse } from "../utils/cleanFullResponse";
@@ -75,6 +76,7 @@ import { inArray } from "drizzle-orm";
 import { replacePromptReference } from "../utils/replacePromptReference";
 import { mcpManager } from "../utils/mcp_manager";
 import z from "zod";
+import { maybeRunGeminiWebSearch } from "../utils/gemini_web_search";
 
 type AsyncIterableStream<T> = AsyncIterable<T> & ReadableStream<T>;
 
@@ -183,6 +185,23 @@ async function processStreamChunks({
       const { serverName, toolName } = parseMcpToolKey(part.toolName);
       const content = escapeDyadTags(part.output);
       chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
+    } else if (part.type === "finish") {
+      // Extract grounding metadata from Google provider
+      const googleMetadata = (part as any).providerMetadata?.google;
+      if (googleMetadata?.groundingMetadata) {
+        const grounding = googleMetadata.groundingMetadata;
+        if (grounding.groundingChunks && grounding.groundingChunks.length > 0) {
+          let sourcesText = "\n\n**Sources**:\n";
+          grounding.groundingChunks.forEach((chunk: any, index: number) => {
+            const title = chunk.web?.title || `Source ${index + 1}`;
+            const uri = chunk.web?.uri;
+            if (uri) {
+              sourcesText += `${index + 1}. [${title}](${uri})\n`;
+            }
+          });
+          chunk += sourcesText;
+        }
+      }
     }
 
     if (!chunk) {
@@ -689,6 +708,44 @@ This conversation includes one or more image attachments. When the user uploads 
           ...limitedHistoryChatMessages,
         ];
 
+        let initialWebSearchPrefill = "";
+        if (settings.enableProWebSearch) {
+          const geminiApiKey = getGeminiApiKeyFromSettings(settings);
+          if (geminiApiKey) {
+            const webSearchResult = await maybeRunGeminiWebSearch({
+              query: req.prompt,
+              apiKey: geminiApiKey,
+              abortSignal: abortController.signal,
+            });
+            if (webSearchResult) {
+              initialWebSearchPrefill = `<dyad-web-search>${escapeXml(
+                webSearchResult.query,
+              )}</dyad-web-search>
+<dyad-web-search-result>${webSearchResult.markdown}</dyad-web-search-result>
+`;
+
+              if (chatMessages.length > 0) {
+                const insertionIndex = Math.max(chatMessages.length - 1, 0);
+                chatMessages.splice(insertionIndex, 0, {
+                  role: "system",
+                  content: `Live Gemini 2.5 Flash web search results to help with the latest user request:
+${webSearchResult.markdown}`,
+                });
+              } else {
+                chatMessages.push({
+                  role: "system",
+                  content: `Live Gemini 2.5 Flash web search results:
+${webSearchResult.markdown}`,
+                });
+              }
+            }
+          } else {
+            logger.warn(
+              "Web search is enabled but no Gemini API key was found in settings or the environment.",
+            );
+          }
+        }
+
         // Check if the last message should include attachments
         if (chatMessages.length >= 2 && attachmentPaths.length > 0) {
           const lastUserIndex = chatMessages.length - 2;
@@ -778,20 +835,33 @@ This conversation includes one or more image attachments. When the user uploads 
 
           // Keep Google provider behavior unchanged: always include includeThoughts
           if (isGoogle) {
-            providerOptions.google = {
+            const googleOptions: GoogleGenerativeAIProviderOptions = {
               thinkingConfig: {
                 includeThoughts: true,
               },
-            } satisfies GoogleGenerativeAIProviderOptions;
+            };
+
+            if (settings.enableProWebSearch) {
+              (googleOptions as any).useSearchGrounding = true;
+            }
+
+            providerOptions.google = googleOptions;
           }
 
           // Vertex-specific fix: only enable thinking on supported Gemini models
           if (isVertex && isGeminiModel && !isFlashLite && !isPartnerModel) {
-            providerOptions.google = {
+            const googleOptions: GoogleGenerativeAIProviderOptions = {
               thinkingConfig: {
                 includeThoughts: true,
               },
-            } satisfies GoogleGenerativeAIProviderOptions;
+            };
+
+            // Vertex AI also supports search grounding if configured
+            if (settings.enableProWebSearch) {
+              (googleOptions as any).useSearchGrounding = true;
+            }
+
+            providerOptions.google = googleOptions;
           }
 
           return streamText({
@@ -879,6 +949,12 @@ This conversation includes one or more image attachments. When the user uploads 
           });
           return fullResponse;
         };
+
+        if (initialWebSearchPrefill) {
+          fullResponse = await processResponseChunkUpdate({
+            fullResponse: initialWebSearchPrefill,
+          });
+        }
 
         if (settings.selectedChatMode === "agent") {
           const tools = await getMcpTools(event);
@@ -1461,6 +1537,17 @@ These are the other apps that I've mentioned in my prompt. These other apps' cod
 
 ${otherAppsCodebaseInfo}
 `;
+}
+
+function getGeminiApiKeyFromSettings(
+  settings: UserSettings,
+): string | undefined {
+  return (
+    settings.providerSettings?.google?.apiKey?.value ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GENERATIVE_LANGUAGE_API_KEY
+  );
 }
 
 async function getMcpTools(event: IpcMainInvokeEvent): Promise<ToolSet> {

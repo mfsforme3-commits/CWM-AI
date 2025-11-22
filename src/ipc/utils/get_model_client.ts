@@ -431,21 +431,6 @@ function getRegularModelClient(
         backupModelClients: [],
       };
     }
-    case "chatmock": {
-      // ChatMock uses a local OpenAI compatible server at port 8000
-      const provider = createOpenAICompatible({
-        name: "chatmock",
-        baseURL: "http://127.0.0.1:8000/v1",
-        apiKey: "dummy-key", // ChatMock ignores the key
-      });
-      return {
-        modelClient: {
-          model: provider(model.name),
-          builtinProviderId: providerId,
-        },
-        backupModelClients: [],
-      };
-    }
     default: {
       // Handle custom providers
       if (providerConfig.type === "custom") {

@@ -1,5 +1,5 @@
 import { ipcMain } from "electron";
-import { streamText, Tool } from "ai";
+import { streamText } from "ai";
 import { readSettings } from "../../main/settings";
 
 import log from "electron-log";
@@ -59,11 +59,6 @@ export function registerHelpBotHandlers() {
             openai: {
               reasoningSummary: "auto",
             } satisfies OpenAIResponsesProviderOptions,
-          },
-          tools: {
-            web_search_preview: openai.tools.webSearchPreview({
-              searchContextSize: "high",
-            }) as Tool,
           },
           messages: updatedHistory as any,
           maxRetries: 1,
