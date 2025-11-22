@@ -10,7 +10,7 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      external: ["better-sqlite3"],
+      external: ["better-sqlite3", "ai-sdk-provider-gemini-cli"],
       output: {
         sourcemap: true,
       },
@@ -24,4 +24,5 @@ export default defineConfig({
       },
     },
   ],
+  assetsInclude: ["**/*.wasm"],
 });

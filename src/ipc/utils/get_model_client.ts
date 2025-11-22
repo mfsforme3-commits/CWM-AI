@@ -8,6 +8,7 @@ import { LanguageModelV2 } from "@ai-sdk/provider";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
+
 import type {
   LargeLanguageModel,
   UserSettings,
@@ -27,6 +28,35 @@ import { getOllamaApiUrl } from "../handlers/local_model_ollama_handler";
 import { createFallback } from "./fallback_ai_model";
 
 const dyadEngineUrl = process.env.DYAD_ENGINE_URL;
+
+type GeminiCliModule = typeof import("ai-sdk-provider-gemini-cli");
+
+let geminiProviderFactoryPromise:
+  | Promise<GeminiCliModule["createGeminiProvider"]>
+  | undefined;
+
+async function loadGeminiProviderFactory() {
+  if (!geminiProviderFactoryPromise) {
+    geminiProviderFactoryPromise = import(
+      "ai-sdk-provider-gemini-cli"
+    ).then((mod) => {
+      const possibleModules = [
+        mod as GeminiCliModule,
+        (mod as { default?: GeminiCliModule }).default,
+      ];
+      for (const candidate of possibleModules) {
+        if (candidate && typeof candidate.createGeminiProvider === "function") {
+          return candidate.createGeminiProvider;
+        }
+      }
+      const availableKeys = Object.keys(mod as Record<string, unknown>);
+      throw new Error(
+        `Failed to load Gemini CLI provider module. Available keys: ${availableKeys.join(", ")}`,
+      );
+    });
+  }
+  return geminiProviderFactoryPromise;
+}
 
 const AUTO_MODELS = [
   {
@@ -187,6 +217,9 @@ export async function getModelClient(
     throw new Error(
       "No API keys available for any model supported by the 'auto' provider.",
     );
+  }
+  if (providerConfig.id === "gemini-cli") {
+    return getGeminiCliModelClient(model, providerConfig.id);
   }
   return getRegularModelClient(model, settings, providerConfig);
 }
@@ -398,6 +431,21 @@ function getRegularModelClient(
         backupModelClients: [],
       };
     }
+    case "chatmock": {
+      // ChatMock uses a local OpenAI compatible server at port 8000
+      const provider = createOpenAICompatible({
+        name: "chatmock",
+        baseURL: "http://127.0.0.1:8000/v1",
+        apiKey: "dummy-key", // ChatMock ignores the key
+      });
+      return {
+        modelClient: {
+          model: provider(model.name),
+          builtinProviderId: providerId,
+        },
+        backupModelClients: [],
+      };
+    }
     default: {
       // Handle custom providers
       if (providerConfig.type === "custom") {
@@ -423,4 +471,24 @@ function getRegularModelClient(
       throw new Error(`Unsupported model provider: ${model.provider}`);
     }
   }
+}
+
+async function getGeminiCliModelClient(
+  model: LargeLanguageModel,
+  providerId: string,
+): Promise<{
+  modelClient: ModelClient;
+  backupModelClients: ModelClient[];
+}> {
+  const createGeminiProvider = await loadGeminiProviderFactory();
+  const provider = createGeminiProvider({
+    authType: "oauth-personal",
+  });
+  return {
+    modelClient: {
+      model: provider(model.name),
+      builtinProviderId: providerId,
+    },
+    backupModelClients: [],
+  };
 }

@@ -53,4 +53,12 @@ export const localTemplatesData: Template[] = [
     isExperimental: true,
     requiresNeon: true,
   },
+  {
+    id: "flutter",
+    title: "Flutter Template",
+    description: "Uses Flutter for building cross-platform apps.",
+    imageUrl: "https://storage.googleapis.com/cms-storage-bucket/0dbfcc7a59cd1cf16282.png",
+    githubUrl: "https://github.com/GeekyAnts/flutter-starter",
+    isOfficial: true,
+  },
 ];

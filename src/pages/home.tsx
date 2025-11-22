@@ -189,8 +189,8 @@ export default function HomePage() {
   // Main Home Page Content
   return (
     <div className="flex flex-col items-center justify-center max-w-3xl w-full m-auto p-8">
-      <SetupBanner />
-
+      {/* Removed SetupBanner */}
+      
       <div className="w-full">
         <ImportAppButton />
         <HomeChatInput onSubmit={handleSubmit} />
@@ -249,7 +249,7 @@ export default function HomePage() {
             </span>
           </button>
         </div>
-        <ProBanner />
+        {/* Removed ProBanner */}
       </div>
       <PrivacyBanner />
 

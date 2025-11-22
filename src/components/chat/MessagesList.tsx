@@ -2,7 +2,8 @@ import type React from "react";
 import type { Message } from "@/ipc/ipc_types";
 import { forwardRef, useState } from "react";
 import ChatMessage from "./ChatMessage";
-import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
+// Setup banners removed from import as they are no longer used
+// import { OpenRouterSetupBanner, SetupBanner } from "../SetupBanner";
 
 import { useStreamChat } from "@/hooks/useStreamChat";
 import { selectedChatIdAtom } from "@/atoms/chatAtoms";
@@ -14,7 +15,6 @@ import { selectedAppIdAtom } from "@/atoms/appAtoms";
 import { showError, showWarning } from "@/lib/toast";
 import { IpcClient } from "@/ipc/ipc_client";
 import { chatMessagesByIdAtom } from "@/atoms/chatAtoms";
-import { useLanguageModelProviders } from "@/hooks/useLanguageModelProviders";
 import { useSettings } from "@/hooks/useSettings";
 import { useUserBudgetInfo } from "@/hooks/useUserBudgetInfo";
 import { PromoMessage } from "./PromoMessage";
@@ -29,7 +29,6 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     const appId = useAtomValue(selectedAppIdAtom);
     const { versions, revertVersion } = useVersions(appId);
     const { streamMessage, isStreaming } = useStreamChat();
-    const { isAnyProviderSetup, isProviderSetup } = useLanguageModelProviders();
     const { settings } = useSettings();
     const setMessagesById = useSetAtom(chatMessagesByIdAtom);
     const [isUndoLoading, setIsUndoLoading] = useState(false);
@@ -38,17 +37,7 @@ export const MessagesList = forwardRef<HTMLDivElement, MessagesListProps>(
     const { userBudget } = useUserBudgetInfo();
 
     const renderSetupBanner = () => {
-      const selectedModel = settings?.selectedModel;
-      if (
-        selectedModel?.name === "free" &&
-        selectedModel?.provider === "auto" &&
-        !isProviderSetup("openrouter")
-      ) {
-        return <OpenRouterSetupBanner className="w-full" />;
-      }
-      if (!isAnyProviderSetup()) {
-        return <SetupBanner />;
-      }
+      // User requested to remove the setup options
       return null;
     };
 

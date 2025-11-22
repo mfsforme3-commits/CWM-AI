@@ -17,7 +17,7 @@ import { formatDistanceToNow, format } from "date-fns";
 import { useVersions } from "@/hooks/useVersions";
 import { useAtomValue } from "jotai";
 import { selectedAppIdAtom } from "@/atoms/appAtoms";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo } from "react";
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard";
 import {
   Tooltip,
@@ -31,7 +31,7 @@ interface ChatMessageProps {
   isLastMessage: boolean;
 }
 
-const ChatMessage = ({ message, isLastMessage }: ChatMessageProps) => {
+const ChatMessage = memo(({ message, isLastMessage }: ChatMessageProps) => {
   const { isStreaming } = useStreamChat();
   const appId = useAtomValue(selectedAppIdAtom);
   const { versions: liveVersions } = useVersions(appId);
@@ -83,14 +83,17 @@ const ChatMessage = ({ message, isLastMessage }: ChatMessageProps) => {
   };
 
   return (
-    <div
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3 }}
       className={`flex ${
         message.role === "assistant" ? "justify-start" : "justify-end"
       }`}
     >
       <div className={`mt-2 w-full max-w-3xl mx-auto group`}>
         <div
-          className={`rounded-lg p-2 ${
+          className={`rounded-lg p-2 transition-all duration-200 ${
             message.role === "assistant" ? "" : "ml-24 bg-(--sidebar-accent)"
           }`}
         >
@@ -210,7 +213,7 @@ const ChatMessage = ({ message, isLastMessage }: ChatMessageProps) => {
         </div>
         {/* Timestamp and commit info for assistant messages - only visible on hover */}
         {message.role === "assistant" && message.createdAt && (
-          <div className="mt-1 flex flex-wrap items-center justify-start space-x-2 text-xs text-gray-500 dark:text-gray-400 ">
+          <div className="mt-1 flex flex-wrap items-center justify-start space-x-2 text-xs text-gray-500 dark:text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
             <div className="flex items-center space-x-1">
               <Clock className="h-3 w-3" />
               <span>{formatTimestamp(message.createdAt)}</span>
@@ -280,8 +283,25 @@ const ChatMessage = ({ message, isLastMessage }: ChatMessageProps) => {
           </div>
         )}
       </div>
-    </div>
+    </motion.div>
   );
-};
+}, (prevProps, nextProps) => {
+    // Custom comparison function for React.memo
+    // Returns true if props are equal (do not re-render), false if they are different (re-render)
+    
+    // Always re-render if it's the last message or if the approval state changes
+    if (nextProps.isLastMessage !== prevProps.isLastMessage) return false;
+    if (nextProps.message.approvalState !== prevProps.message.approvalState) return false;
+    
+    // Compare message content and other key properties
+    if (nextProps.message.id !== prevProps.message.id) return false;
+    if (nextProps.message.content !== prevProps.message.content) return false;
+    if (nextProps.message.role !== prevProps.message.role) return false;
+    if (nextProps.message.createdAt !== prevProps.message.createdAt) return false;
+    if (nextProps.message.requestId !== prevProps.message.requestId) return false;
+    if (nextProps.message.commitHash !== prevProps.message.commitHash) return false;
+    
+    return true;
+});
 
 export default ChatMessage;
