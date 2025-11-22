@@ -708,43 +708,10 @@ This conversation includes one or more image attachments. When the user uploads 
           ...limitedHistoryChatMessages,
         ];
 
-        let initialWebSearchPrefill = "";
-        if (settings.enableProWebSearch) {
-          const geminiApiKey = getGeminiApiKeyFromSettings(settings);
-          if (geminiApiKey) {
-            const webSearchResult = await maybeRunGeminiWebSearch({
-              query: req.prompt,
-              apiKey: geminiApiKey,
-              abortSignal: abortController.signal,
-            });
-            if (webSearchResult) {
-              initialWebSearchPrefill = `<dyad-web-search>${escapeXml(
-                webSearchResult.query,
-              )}</dyad-web-search>
-<dyad-web-search-result>${webSearchResult.markdown}</dyad-web-search-result>
-`;
-
-              if (chatMessages.length > 0) {
-                const insertionIndex = Math.max(chatMessages.length - 1, 0);
-                chatMessages.splice(insertionIndex, 0, {
-                  role: "system",
-                  content: `Live Gemini 2.5 Flash web search results to help with the latest user request:
-${webSearchResult.markdown}`,
-                });
-              } else {
-                chatMessages.push({
-                  role: "system",
-                  content: `Live Gemini 2.5 Flash web search results:
-${webSearchResult.markdown}`,
-                });
-              }
-            }
-          } else {
-            logger.warn(
-              "Web search is enabled but no Gemini API key was found in settings or the environment.",
-            );
-          }
-        }
+        const webSearchTools = createWebSearchTool({
+          settings,
+          abortSignal: abortController.signal,
+        });
 
         // Check if the last message should include attachments
         if (chatMessages.length >= 2 && attachmentPaths.length > 0) {
@@ -950,27 +917,24 @@ ${webSearchResult.markdown}`,
           return fullResponse;
         };
 
-        if (initialWebSearchPrefill) {
-          fullResponse = await processResponseChunkUpdate({
-            fullResponse: initialWebSearchPrefill,
-          });
-        }
-
         if (settings.selectedChatMode === "agent") {
           const tools = await getMcpTools(event);
 
           const { fullStream } = await simpleStreamText({
             chatMessages: limitedHistoryChatMessages,
             modelClient,
-            tools: {
-              ...tools,
-              "generate-code": {
-                description:
-                  "ALWAYS use this tool whenever generating or editing code for the codebase.",
-                inputSchema: z.object({}),
-                execute: async () => "",
+            tools: combineToolSets(
+              tools,
+              {
+                "generate-code": {
+                  description:
+                    "ALWAYS use this tool whenever generating or editing code for the codebase.",
+                  inputSchema: z.object({}),
+                  execute: async () => "",
+                },
               },
-            },
+              webSearchTools,
+            ),
             systemPromptOverride: constructSystemPrompt({
               aiRules: await readAiRules(getDyadAppPath(updatedChat.app.path)),
               chatMode: "agent",
@@ -1002,6 +966,7 @@ ${webSearchResult.markdown}`,
           chatMessages,
           modelClient,
           files: files,
+          tools: combineToolSets(webSearchTools),
         });
 
         // Process the stream as before
@@ -1539,6 +1504,17 @@ ${otherAppsCodebaseInfo}
 `;
 }
 
+function combineToolSets(
+  ...toolSets: Array<ToolSet | undefined>
+): ToolSet | undefined {
+  const merged: ToolSet = {};
+  for (const set of toolSets) {
+    if (!set) continue;
+    Object.assign(merged, set);
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 function getGeminiApiKeyFromSettings(
   settings: UserSettings,
 ): string | undefined {
@@ -1548,6 +1524,64 @@ function getGeminiApiKeyFromSettings(
     process.env.GOOGLE_API_KEY ||
     process.env.GENERATIVE_LANGUAGE_API_KEY
   );
+}
+
+function createWebSearchTool({
+  settings,
+  abortSignal,
+}: {
+  settings: UserSettings;
+  abortSignal: AbortSignal;
+}): ToolSet | undefined {
+  if (!settings.enableProWebSearch) {
+    return undefined;
+  }
+
+  return {
+    "web-search": {
+      description:
+        "Use this to search the live web (via Gemini 2.5 Flash) whenever you need current information, recent docs, or factual updates.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .describe(
+            "A concise search query that describes the information you need.",
+          ),
+      }),
+      execute: async ({ query }: { query: string }) => {
+        const trimmedQuery = (query || "").trim();
+        if (!trimmedQuery) {
+          return `<dyad-web-search-result>Please provide a search query.</dyad-web-search-result>`;
+        }
+
+        const apiKey = getGeminiApiKeyFromSettings(settings);
+        if (!apiKey) {
+          return `<dyad-web-search>${escapeXml(
+            trimmedQuery,
+          )}</dyad-web-search>
+<dyad-web-search-result>Gemini web search is not configured. Please set a Google Gemini API key.</dyad-web-search-result>`;
+        }
+
+        const result = await maybeRunGeminiWebSearch({
+          query: trimmedQuery,
+          apiKey,
+          abortSignal,
+        });
+
+        if (!result) {
+          return `<dyad-web-search>${escapeXml(
+            trimmedQuery,
+          )}</dyad-web-search>
+<dyad-web-search-result>Unable to retrieve web results right now.</dyad-web-search-result>`;
+        }
+
+        return `<dyad-web-search>${escapeXml(
+          result.query,
+        )}</dyad-web-search>
+<dyad-web-search-result>${result.markdown}</dyad-web-search-result>`;
+      },
+    },
+  };
 }
 
 async function getMcpTools(event: IpcMainInvokeEvent): Promise<ToolSet> {
