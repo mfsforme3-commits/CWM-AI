@@ -1,0 +1,243 @@
+name: Build and Release Electron App
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: false
+        default: 'draft'
+        type: choice
+        options:
+        - 'draft'
+        - 'prerelease'
+        - 'release'
+
+env:
+  NODE_VERSION: '20'
+  NODE_OPTIONS: '--max-old-space-size=4096'
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run type checks
+        run: npm run ts
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+  build:
+    name: Build App
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: 'darwin'
+            arch: 'universal'
+            name: 'macos'
+          - os: macos-13  # Intel Mac
+            platform: 'darwin'
+            arch: 'x64'
+            name: 'macos-intel'
+          - os: ubuntu-22.04  # Use specific Ubuntu version for consistency
+            platform: 'linux'
+            arch: 'x64'
+            name: 'linux'
+          - os: windows-latest
+            platform: 'win32'
+            arch: 'x64'
+            name: 'windows'
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install system dependencies (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-dev libatk-bridge2.0-dev libdrm2 libxkbcommon0 libxss1 libasound2-dev
+
+      - name: Build Electron app
+        run: npm run make
+        env:
+          NODE_ENV: production
+
+      - name: List build outputs (Debug)
+        run: |
+          echo "Build completed for ${{ matrix.name }}"
+          find out -type f -name "*.exe" -o -name "*.dmg" -o -name "*.zip" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" | head -10
+
+      - name: Upload macOS artifacts
+        if: matrix.platform == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyad-${{ matrix.name }}
+          path: |
+            out/make/zip/darwin/**/*.zip
+            out/make/dmg/**/*.dmg
+          retention-days: 30
+
+      - name: Upload Windows artifacts
+        if: matrix.platform == 'win32'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyad-${{ matrix.name }}
+          path: |
+            out/make/squirrel.windows/**/*.exe
+            out/make/squirrel.windows/**/*.nupkg
+            out/make/zip/win32/**/*.zip
+          retention-days: 30
+
+      - name: Upload Linux artifacts
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyad-${{ matrix.name }}
+          path: |
+            out/make/deb/**/*.deb
+            out/make/rpm/**/*.rpm
+            out/make/zip/linux/**/*.zip
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: 'dyad-*'
+
+      - name: Display structure of downloaded files
+        run: |
+          echo "Downloaded artifacts structure:"
+          find dist/ -type f | sort
+
+      - name: Determine release type
+        id: release_type
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "draft=${{ github.event.inputs.release_type == 'draft' }}" >> $GITHUB_OUTPUT
+            echo "prerelease=${{ github.event.inputs.release_type == 'prerelease' }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == *"-beta"* ]] || [[ "${{ github.ref }}" == *"-alpha"* ]] || [[ "${{ github.ref }}" == *"-rc"* ]]; then
+            echo "draft=false" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "draft=false" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: ${{ steps.release_type.outputs.draft }}
+          prerelease: ${{ steps.release_type.outputs.prerelease }}
+          files: |
+            dist/**/*.exe
+            dist/**/*.dmg
+            dist/**/*.zip
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.nupkg
+          generate_release_notes: true
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('Build {0}', github.run_number) }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('build-{0}', github.run_number) }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Quick build check for PRs (faster feedback)
+  pr-build:
+    name: PR Build Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-dev libatk-bridge2.0-dev libdrm2 libxkbcommon0 libxss1 libasound2-dev
+
+      - name: Run basic checks
+        run: |
+          npm run ts
+          npm run lint
+
+      - name: Test package build
+        run: npm run package
+        env:
+          NODE_ENV: production
+
+      - name: Verify build output
+        run: |
+          if [ -d "out" ]; then
+            echo "✅ Build successful"
+            du -sh out/
+          else
+            echo "❌ Build failed - no output directory"
+            exit 1
+          fi
+
+      - name: Upload PR build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyad-pr-${{ github.event.number }}-linux
+          path: out/
+          retention-days: 7

@@ -1,0 +1,214 @@
+name: Nightly Development Build
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build even if no changes'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: '20'
+  NODE_OPTIONS: '--max-old-space-size=4096'
+
+jobs:
+  check-changes:
+    name: Check for Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has-changes: ${{ steps.changes.outputs.has-changes }}
+      commit-sha: ${{ steps.changes.outputs.commit-sha }}
+      commit-date: ${{ steps.changes.outputs.commit-date }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for changes in last 24 hours
+        id: changes
+        run: |
+          # Get the latest commit date
+          latest_commit_date=$(git log -1 --format="%ci")
+          latest_commit_sha=$(git log -1 --format="%H")
+          
+          # Convert to timestamp
+          latest_timestamp=$(date -d "$latest_commit_date" +%s)
+          yesterday_timestamp=$(date -d "24 hours ago" +%s)
+          
+          echo "Latest commit: $latest_commit_date ($latest_timestamp)"
+          echo "24 hours ago: $(date -d "24 hours ago" +%c) ($yesterday_timestamp)"
+          
+          if [[ $latest_timestamp -gt $yesterday_timestamp ]] || [[ "${{ github.event.inputs.force_build }}" == "true" ]]; then
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected or forced build requested"
+          else
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "No recent changes"
+          fi
+          
+          echo "commit-sha=${latest_commit_sha}" >> $GITHUB_OUTPUT
+          echo "commit-date=${latest_commit_date}" >> $GITHUB_OUTPUT
+
+  build-nightly:
+    name: Build Nightly
+    needs: check-changes
+    if: needs.check-changes.outputs.has-changes == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: 'darwin'
+            name: 'macos'
+          - os: ubuntu-22.04
+            platform: 'linux'
+            name: 'linux'
+          - os: windows-latest
+            platform: 'win32'
+            name: 'windows'
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install system dependencies (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libnss3-dev libatk-bridge2.0-dev libdrm2 libxkbcommon0 libxss1 libasound2-dev
+
+      - name: Update version for nightly
+        run: |
+          # Get current version and append nightly suffix
+          current_version=$(node -p "require('./package.json').version")
+          nightly_date=$(date +"%Y%m%d")
+          short_sha=$(echo "${{ needs.check-changes.outputs.commit-sha }}" | cut -c1-7)
+          nightly_version="${current_version}-nightly.${nightly_date}.${short_sha}"
+          
+          echo "Setting nightly version: $nightly_version"
+          npm version $nightly_version --no-git-tag-version
+
+      - name: Build Electron app
+        run: npm run make
+        env:
+          NODE_ENV: production
+
+      - name: Upload nightly artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dyad-nightly-${{ matrix.name }}
+          path: |
+            out/make/**/*
+          retention-days: 14
+
+  create-nightly-release:
+    name: Create Nightly Release
+    needs: [check-changes, build-nightly]
+    runs-on: ubuntu-latest
+    if: needs.check-changes.outputs.has-changes == 'true'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all nightly artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: nightly-dist/
+          pattern: 'dyad-nightly-*'
+
+      - name: Generate nightly tag and release name
+        id: nightly-info
+        run: |
+          nightly_date=$(date +"%Y-%m-%d")
+          short_sha=$(echo "${{ needs.check-changes.outputs.commit-sha }}" | cut -c1-7)
+          tag_name="nightly-${nightly_date}-${short_sha}"
+          release_name="Nightly Build ${nightly_date} (${short_sha})"
+          
+          echo "tag-name=$tag_name" >> $GITHUB_OUTPUT
+          echo "release-name=$release_name" >> $GITHUB_OUTPUT
+
+      - name: Delete old nightly releases
+        run: |
+          # Keep only the last 7 nightly releases
+          gh release list --repo ${{ github.repository }} --limit 100 | \
+            grep "nightly-" | \
+            tail -n +8 | \
+            awk '{print $3}' | \
+            xargs -r -I {} gh release delete {} --repo ${{ github.repository }} --yes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Create Nightly Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.nightly-info.outputs.release-name }}
+          tag_name: ${{ steps.nightly-info.outputs.tag-name }}
+          draft: false
+          prerelease: true
+          files: |
+            nightly-dist/**/*.exe
+            nightly-dist/**/*.dmg
+            nightly-dist/**/*.zip
+            nightly-dist/**/*.deb
+            nightly-dist/**/*.rpm
+            nightly-dist/**/*.nupkg
+          body: |
+            # 🌙 Nightly Development Build
+            
+            **Built from commit:** ${{ needs.check-changes.outputs.commit-sha }}
+            **Commit date:** ${{ needs.check-changes.outputs.commit-date }}
+            **Build date:** $(date +"%Y-%m-%d %H:%M:%S UTC")
+            
+            ## ⚠️ Warning
+            This is an automated nightly build for development and testing purposes.
+            - May contain bugs or incomplete features
+            - Not recommended for production use
+            - Features may change without notice
+            
+            ## 🆕 What's New
+            This build includes all changes from the main branch up to the commit above.
+            
+            ## 💾 Downloads
+            Choose the appropriate file for your operating system:
+            - **Windows**: `.exe` files
+            - **macOS**: `.dmg` files  
+            - **Linux**: `.deb` (Ubuntu/Debian) or `.rpm` (RHEL/CentOS) files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  cleanup:
+    name: Cleanup Old Artifacts
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 30
+          keep_minimum_runs: 10
