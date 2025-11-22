@@ -60,6 +60,7 @@ import type {
   RevertVersionResponse,
   RevertVersionParams,
   RespondToAppInputParams,
+  RunAppCommandParams,
   PromptDto,
   CreatePromptParamsDto,
   UpdatePromptParamsDto,
@@ -547,6 +548,15 @@ export class IpcClient {
   ): Promise<void> {
     try {
       await this.ipcRenderer.invoke("respond-to-app-input", params);
+    } catch (error) {
+      showError(error);
+      throw error;
+    }
+  }
+
+  public async runAppCommand(params: RunAppCommandParams): Promise<void> {
+    try {
+      await this.ipcRenderer.invoke("run-app-command", params);
     } catch (error) {
       showError(error);
       throw error;

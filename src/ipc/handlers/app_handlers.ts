@@ -9,6 +9,7 @@ import type {
   CopyAppParams,
   EditAppFileReturnType,
   RespondToAppInputParams,
+  RunAppCommandParams,
 } from "../ipc_types";
 import fs from "node:fs";
 import path from "node:path";
@@ -140,6 +141,12 @@ async function executeAppLocalNode({
   installCommand?: string | null;
   startCommand?: string | null;
 }): Promise<void> {
+  const hasCustomCommands = !!installCommand?.trim() && !!startCommand?.trim();
+  if (isFlutterProject(appPath) && !hasCustomCommands) {
+    await runFlutterSetup({ appPath, appId, event });
+    return;
+  }
+
   const command = getCommand({ installCommand, startCommand });
   const spawnedProcess = spawn(command, [], {
     cwd: appPath,
@@ -318,6 +325,13 @@ async function executeAppInDocker({
   installCommand?: string | null;
   startCommand?: string | null;
 }): Promise<void> {
+  const hasCustomCommands = !!installCommand?.trim() && !!startCommand?.trim();
+  if (isFlutterProject(appPath) && !hasCustomCommands) {
+    throw new Error(
+      "Flutter projects require the Host runtime. Please switch runtime mode to Host in Settings > Runtime before running this app.",
+    );
+  }
+
   const containerName = `dyad-app-${appId}`;
 
   // First, check if Docker is available
@@ -1450,6 +1464,107 @@ export function registerAppHandlers() {
   );
 
   handle(
+    "run-app-command",
+    async (event, { appId, command }: RunAppCommandParams) => {
+      const trimmedCommand = command?.trim();
+      if (!trimmedCommand) {
+        throw new Error("Command cannot be empty.");
+      }
+
+      logger.log(`Running custom command for app ${appId}: ${trimmedCommand}`);
+
+      return withLock(appId, async () => {
+        const app = await db.query.apps.findFirst({
+          where: eq(apps.id, appId),
+        });
+
+        if (!app) {
+          throw new Error("App not found");
+        }
+
+        const existingProcess = runningApps.get(appId);
+        if (existingProcess) {
+          logger.log(
+            `Stopping running app ${appId} before executing custom command.`,
+          );
+          await stopAppByInfo(appId, existingProcess);
+        }
+
+        await cleanUpPort(32100);
+
+        const appPath = getDyadAppPath(app.path);
+
+        const spawnedProcess = spawn(trimmedCommand, [], {
+          cwd: appPath,
+          shell: true,
+          stdio: "pipe",
+          detached: false,
+        });
+
+        if (!spawnedProcess.pid) {
+          let errorOutput = "";
+          let spawnErr: any | null = null;
+          spawnedProcess.stderr?.on(
+            "data",
+            (data) => (errorOutput += data.toString()),
+          );
+          await new Promise<void>((resolve) => {
+            spawnedProcess.once("error", (err) => {
+              spawnErr = err;
+              resolve();
+            });
+          });
+
+          const details = [
+            spawnErr?.message ? `message=${spawnErr.message}` : null,
+            spawnErr?.code ? `code=${spawnErr.code}` : null,
+            spawnErr?.errno ? `errno=${spawnErr.errno}` : null,
+            spawnErr?.syscall ? `syscall=${spawnErr.syscall}` : null,
+            spawnErr?.path ? `path=${spawnErr.path}` : null,
+            spawnErr?.spawnargs
+              ? `spawnargs=${JSON.stringify(spawnErr.spawnargs)}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(", ");
+
+          logger.error(
+            `Failed to spawn custom command for app ${appId}. Command="${trimmedCommand}", CWD="${appPath}", ${details}\nSTDERR:\n${
+              errorOutput || "(empty)"
+            }`,
+          );
+
+          throw new Error(
+            `Failed to spawn command.\nCommand: ${trimmedCommand}\nDetails: ${details || "n/a"}\nSTDERR:\n${
+              errorOutput || "(empty)"
+            }`,
+          );
+        }
+
+        const currentProcessId = processCounter.increment();
+        runningApps.set(appId, {
+          process: spawnedProcess,
+          processId: currentProcessId,
+          isDocker: false,
+        });
+
+        safeSend(event.sender, "app:output", {
+          type: "stdout",
+          message: `$ ${trimmedCommand}`,
+          appId,
+        });
+
+        listenToProcess({
+          process: spawnedProcess,
+          appId,
+          isNeon: !!app.neonProjectId,
+          event,
+        });
+      });
+    },
+  );
+
+  handle(
     "search-app",
     async (_, searchQuery: string): Promise<AppSearchResult[]> => {
       // Use parameterized query to prevent SQL injection
@@ -1546,6 +1661,106 @@ function getCommand({
   return hasCustomCommands
     ? `${installCommand!.trim()} && ${startCommand!.trim()}`
     : DEFAULT_COMMAND;
+}
+
+function isFlutterProject(appPath: string): boolean {
+  return fs.existsSync(path.join(appPath, "pubspec.yaml"));
+}
+
+function hasFlutterEntryPoint(appPath: string): boolean {
+  return fs.existsSync(path.join(appPath, "lib", "main.dart"));
+}
+
+async function runFlutterSetup({
+  appPath,
+  appId,
+  event,
+}: {
+  appPath: string;
+  appId: number;
+  event: Electron.IpcMainInvokeEvent;
+}) {
+  safeSend(event.sender, "app:output", {
+    type: "stdout",
+    message: "Detected Flutter project. Running `flutter pub get`...",
+    appId,
+  });
+
+  try {
+    await runOneOffCommand({
+      command: "flutter",
+      args: ["pub", "get"],
+      cwd: appPath,
+      appId,
+      event,
+    });
+  } catch (error: any) {
+    safeSend(event.sender, "app:output", {
+      type: "stderr",
+      message:
+        error?.message ||
+        "Failed to run `flutter pub get`. Make sure Flutter is installed and available in your PATH.",
+      appId,
+    });
+    return;
+  }
+
+  const followUpMessage = hasFlutterEntryPoint(appPath)
+    ? "Dependencies installed. To run the app, ask me to execute `flutter run -d <device_id>` (for example `flutter run -d linux`) and confirm the command."
+    : "Dependencies installed, but no Flutter scaffold was found. Run `flutter create .` first, then ask me to execute `flutter run -d <device_id>` once the project is generated.";
+
+  safeSend(event.sender, "app:output", {
+    type: "stdout",
+    message: followUpMessage,
+    appId,
+  });
+}
+
+async function runOneOffCommand({
+  command,
+  args,
+  cwd,
+  appId,
+  event,
+}: {
+  command: string;
+  args: string[];
+  cwd: string;
+  appId: number;
+  event: Electron.IpcMainInvokeEvent;
+}) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      shell: false,
+      stdio: "pipe",
+    });
+
+    child.stdout?.on("data", (data) => {
+      safeSend(event.sender, "app:output", {
+        type: "stdout",
+        message: util.stripVTControlCharacters(data.toString()),
+        appId,
+      });
+    });
+
+    child.stderr?.on("data", (data) => {
+      safeSend(event.sender, "app:output", {
+        type: "stderr",
+        message: util.stripVTControlCharacters(data.toString()),
+        appId,
+      });
+    });
+
+    child.on("error", (err) => reject(err));
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${command} exited with code ${code}`));
+      }
+    });
+  });
 }
 
 async function cleanUpPort(port: number) {

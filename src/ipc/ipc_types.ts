@@ -14,6 +14,11 @@ export interface RespondToAppInputParams {
   response: string;
 }
 
+export interface RunAppCommandParams {
+  appId: number;
+  command: string;
+}
+
 export interface ListAppsResponse {
   apps: App[];
   appBasePath: string;

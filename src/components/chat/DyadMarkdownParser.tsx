@@ -24,6 +24,7 @@ import { DyadWebSearch } from "./DyadWebSearch";
 import { DyadRead } from "./DyadRead";
 import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
+import { DyadRunCommand } from "./DyadRunCommand";
 
 interface DyadMarkdownParserProps {
   content: string;
@@ -135,6 +136,7 @@ function preprocessUnclosedTags(content: string): {
     "dyad-read",
     "think",
     "dyad-command",
+    "dyad-run-command",
     "dyad-mcp-tool-call",
     "dyad-mcp-tool-result",
   ];
@@ -207,6 +209,7 @@ function parseCustomTags(content: string): ContentPiece[] {
     "dyad-read",
     "think",
     "dyad-command",
+    "dyad-run-command",
     "dyad-mcp-tool-call",
     "dyad-mcp-tool-result",
   ];
@@ -508,6 +511,13 @@ function renderCustomTag(
         return <>{mapActionToButton(action)}</>;
       }
       return null;
+    case "dyad-run-command":
+      return (
+        <DyadRunCommand
+          command={attributes.command || content || ""}
+          autorun={attributes.autorun === "true"}
+        />
+      );
 
     default:
       return null;

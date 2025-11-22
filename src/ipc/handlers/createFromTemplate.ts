@@ -9,6 +9,31 @@ import { getTemplateOrThrow } from "../utils/template_utils";
 import log from "electron-log";
 
 const logger = log.scope("createFromTemplate");
+const FLUTTER_AI_RULES = `# Tech Stack
+- Build everything with Flutter (Dart). Follow the standard project layout that \`flutter create .\` generates.
+- Keep widgets and shared logic inside the \`lib/\` directory. The entry point must remain in \`lib/main.dart\`.
+- Compose UI with Material 3 widgets. Use \`ThemeData\` for colors/typography and create reusable widgets for shared layouts.
+- Manage dependencies through \`pubspec.yaml\`. Add packages with \`flutter pub add <package>\` and run \`flutter pub get\` when it changes.
+- Store local fonts/images under \`assets/\` and declare them in \`pubspec.yaml\`.
+- Prefer declarative navigation APIs (\`Navigator\`, \`Router\`, or packages like \`go_router\` once added) for multi-page flows.
+- Keep platform-specific code in the respective \`android/\`, \`ios/\`, or \`web/\` folders only when absolutely necessary.
+- Before writing app code, ensure the Flutter scaffold exists (run \`flutter create .\` in the workspace root if files like \`lib/main.dart\` or \`pubspec.yaml\` are missing).
+`;
+const FLUTTER_README = `# Flutter Workspace
+
+This template starts empty so you can decide how to structure your Flutter app. Follow these steps before writing application code:
+
+1. **Initialize the project**
+   - Run \`flutter create .\` inside this folder. This generates the standard Flutter file layout (lib/, android/, ios/, etc.).
+2. **Install dependencies**
+   - After editing \`pubspec.yaml\`, run \`flutter pub get\` to install packages.
+3. **Run the app on a device or emulator**
+   - Use \`flutter devices\` to list available targets.
+   - Start the app with \`flutter run -d <device_id>\` (examples: \`-d linux\`, \`-d windows\`, \`-d macos\`, \`-d chrome\`, or an Android/iOS device ID).
+4. **Rebuild after code changes**
+   - Stop the current run with \`q\` in the terminal, then run the command again with the desired \`-d\` target.
+
+These commands can be triggered directly from Dyad using <dyad-run-command> tags. For common Flutter commands (create, pub get, run), set \`autorun="true"\` so they execute automatically.`;
 
 export async function createFromTemplate({
   fullAppPath,
@@ -28,10 +53,32 @@ export async function createFromTemplate({
 
   const template = await getTemplateOrThrow(templateId);
   if (!template.githubUrl) {
-    throw new Error(`Template ${templateId} has no GitHub URL`);
+    logger.info(
+      `Template ${templateId} does not provide a GitHub source. Creating an empty project directory instead.`,
+    );
+    await fs.ensureDir(fullAppPath);
+    await ensureFlutterAiRules(fullAppPath);
+    await ensureFlutterReadme(fullAppPath);
+    return;
   }
   const repoCachePath = await cloneRepo(template.githubUrl);
   await copyRepoToApp(repoCachePath, fullAppPath);
+}
+
+async function ensureFlutterAiRules(appPath: string) {
+  const aiRulesPath = path.join(appPath, "AI_RULES.md");
+  if (await fs.pathExists(aiRulesPath)) {
+    return;
+  }
+  await fs.writeFile(aiRulesPath, `${FLUTTER_AI_RULES.trim()}\n`, "utf8");
+}
+
+async function ensureFlutterReadme(appPath: string) {
+  const readmePath = path.join(appPath, "README.md");
+  if (await fs.pathExists(readmePath)) {
+    return;
+  }
+  await fs.writeFile(readmePath, `${FLUTTER_README.trim()}\n`, "utf8");
 }
 
 async function cloneRepo(repoUrl: string): Promise<string> {
