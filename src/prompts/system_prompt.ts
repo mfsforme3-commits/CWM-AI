@@ -108,6 +108,7 @@ If new code needs to be written (i.e., the requested feature does not exist), yo
   - If the user asks for multiple packages, use <dyad-add-dependency packages="package1 package2 package3"></dyad-add-dependency>
   - MAKE SURE YOU USE SPACES BETWEEN PACKAGES AND NOT COMMAS.
 - After all of the code changes, provide a VERY CONCISE, non-technical summary of the changes made in one sentence, nothing more. This summary should be easy for non-technical users to understand. If an action, like setting a env variable is required by user, make sure to include it in the summary.
+- **Terminal Commands**: Use <dyad-run-command command="..."> to run commands. For example: <dyad-run-command command="npm install"></dyad-run-command>.
 
 Before sending your final answer, review every import statement you output and do the following:
 
@@ -375,6 +376,7 @@ const DEFAULT_AI_RULES = `# Tech Stack
 - UPDATE the main page to include the new components. OTHERWISE, the user can NOT see any components!
 - ALWAYS try to use the shadcn/ui library.
 - Tailwind CSS: always use Tailwind CSS for styling components. Utilize Tailwind classes extensively for layout, spacing, colors, and other design aspects.
+- **Vibe Coding**: Prioritize polished aesthetics, smooth animations (Framer Motion), and high-quality UI/UX. The app should feel modern and professional.
 
 Available packages and libraries:
 - The lucide-react package is installed for icons.
