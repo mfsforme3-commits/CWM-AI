@@ -33,9 +33,6 @@ export const DyadRunCommand: React.FC<DyadRunCommandProps> = ({
       return;
     }
 
-    const confirmed = window.confirm(
-      `Run "${trimmedCommand}" inside your app workspace?`,
-    );
     if (!(autorun && isSafeFlutterCommand(normalizedCommand))) {
       const confirmed = window.confirm(
         `Run "${normalizedCommand}" inside your app workspace?`,

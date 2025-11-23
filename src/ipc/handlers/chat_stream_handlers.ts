@@ -212,15 +212,18 @@ async function processStreamChunks({
       const content = escapeDyadTags(JSON.stringify(part.input));
       chunk = `<dyad-mcp-tool-call server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-call>\n`;
     } else if (part.type === "tool-result") {
+      // Cast to any because the TypeScript definition for ToolResultPart might be incomplete regarding 'result'
+      const toolResult = (part as any).result;
+
       if (isCodexCli && part.toolName === "patch") {
-        const writeTags = codexPatchToDyadWrites(part.result);
+        const writeTags = codexPatchToDyadWrites(toolResult);
         if (writeTags.length > 0) {
           chunk = writeTags.join("\n") + "\n";
         } else {
           const payload =
-            typeof part.result === "string"
-              ? part.result
-              : JSON.stringify(part.result ?? {});
+            typeof toolResult === "string"
+              ? toolResult
+              : JSON.stringify(toolResult ?? {});
           const content = escapeDyadTags(payload);
           chunk = `<dyad-output type="warning" message="Codex returned a patch without file content">${content}</dyad-output>\n`;
         }
@@ -230,14 +233,17 @@ async function processStreamChunks({
           codexExecInputs.delete(toolCallId);
         }
         const command =
-          (part.result as any)?.command ||
+          (toolResult as any)?.command ||
           execInput?.command ||
           "";
         // Do not surface Codex terminal commands in the UI; let the model consume the output internally.
         if (isTrivialCommand(command)) {
           continue;
         }
-        continue;
+        // Fallback to standard MCP display for non-trivial commands
+        const { serverName, toolName } = parseMcpToolKey(part.toolName);
+        const content = escapeDyadTags(toolResult);
+        chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
       } else {
         const { serverName, toolName } = parseMcpToolKey(part.toolName);
         const content = escapeDyadTags(part.output);

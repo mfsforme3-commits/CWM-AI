@@ -6,7 +6,6 @@ import log from "electron-log";
 import { safeSend } from "../utils/safe_sender";
 import {
   createOpenAI,
-  openai,
   OpenAIResponsesProviderOptions,
 } from "@ai-sdk/openai";
 import { StartHelpChatParams } from "../ipc_types";

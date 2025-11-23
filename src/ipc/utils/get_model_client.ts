@@ -66,38 +66,9 @@ async function loadGeminiProviderFactory() {
   return geminiProviderFactoryPromise;
 }
 
-async function loadCodexProviderFactory() {
-  if (!codexProviderFactoryPromise) {
-    codexProviderFactoryPromise = import("ai-sdk-provider-codex-cli").then(
-      (mod) => {
-        const possibleModules = [
-          mod as CodexCliModule,
-          (mod as { default?: CodexCliModule }).default,
-        ];
-        for (const candidate of possibleModules) {
-          // Check for createCodexCli (the export name seen in index.d.ts)
-          // or createCodexProvider if it exists.
-          if (candidate) {
-            if (typeof candidate.createCodexCli === "function") {
-              return candidate.createCodexCli;
-            }
-            // Legacy or alternative name check
-            if (
-              typeof (candidate as any).createCodexProvider === "function"
-            ) {
-              return (candidate as any).createCodexProvider;
-            }
-          }
-        }
-        const availableKeys = Object.keys(mod as Record<string, unknown>);
-        throw new Error(
-          `Failed to load Codex CLI provider module. Available keys: ${availableKeys.join(", ")}`,
-        );
-      },
-    );
-  }
-  return codexProviderFactoryPromise;
-}
+import { createCodexCli } from "./codex_provider";
+
+// Removed loadCodexProviderFactory as we are using local implementation
 
 const AUTO_MODELS = [
   {
@@ -268,7 +239,7 @@ export async function getModelClient(
     return getCodexCliModelClient(model, providerConfig.id, appPath);
   }
   if (providerConfig.id === "qwen-code-cli") {
-    return getQwenCodeCliModelClient(model, providerConfig.id);
+    return getQwenCodeCliModelClient(model, providerConfig.id, appPath);
   }
   return getRegularModelClient(model, settings, providerConfig);
 }
@@ -350,9 +321,9 @@ function getRegularModelClient(
         baseURL,
         googleAuthOptions: serviceAccountKey
           ? {
-              // Expecting the user to paste the full JSON of the service account key
-              credentials: JSON.parse(serviceAccountKey),
-            }
+            // Expecting the user to paste the full JSON of the service account key
+            credentials: JSON.parse(serviceAccountKey),
+          }
           : undefined,
       });
       return {
@@ -530,11 +501,16 @@ async function getGeminiCliModelClient(
 async function getQwenCodeCliModelClient(
   model: LargeLanguageModel,
   providerId: string,
+  appPath?: string,
 ): Promise<{
   modelClient: ModelClient;
   backupModelClients: ModelClient[];
 }> {
-  const provider = createQwenCodeCli();
+  const provider = createQwenCodeCli({
+    defaultSettings: {
+      cwd: appPath,
+    },
+  });
   return {
     modelClient: {
       model: provider(model.name),
@@ -552,9 +528,9 @@ async function getCodexCliModelClient(
   modelClient: ModelClient;
   backupModelClients: ModelClient[];
 }> {
-  const createCodexProvider = await loadCodexProviderFactory();
-  const provider = createCodexProvider({
-    defaultSettings: appPath ? { cwd: appPath } : undefined,
+  // Use local createCodexCli
+  const provider = createCodexCli({
+    cwd: appPath,
   });
   return {
     modelClient: {

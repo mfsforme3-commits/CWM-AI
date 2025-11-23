@@ -26,7 +26,7 @@ function resolveQwenPath(): string {
     }
     // Fallback to assuming 'cli.js' or similar if bin not standard
     return path.join(pkgDir, "cli.js");
-  } catch (error) {
+  } catch {
     // Fallback to global/path qwen
     return "qwen";
   }

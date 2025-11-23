@@ -19,6 +19,10 @@ interface QwenCodeCliSettings {
    * Arguments to pass to the Qwen CLI.
    */
   args?: string[];
+  /**
+   * Working directory for the Qwen CLI process.
+   */
+  cwd?: string;
 }
 
 export class QwenCodeCliLanguageModel implements LanguageModelV2 {
@@ -26,9 +30,9 @@ export class QwenCodeCliLanguageModel implements LanguageModelV2 {
   readonly provider = "qwen-code-cli";
   readonly modelId: string;
   readonly settings: QwenCodeCliSettings;
-  
+
   // Required by LanguageModelV2
-  readonly supportedUrls = {}; 
+  readonly supportedUrls = {};
 
   constructor(modelId: string, settings: QwenCodeCliSettings = {}) {
     this.modelId = modelId;
@@ -85,25 +89,31 @@ export class QwenCodeCliLanguageModel implements LanguageModelV2 {
     warnings: LanguageModelV2CallWarning[];
   }> {
     const command = this.settings.command || "qwen";
-    
+
     let promptText = "";
     for (const msg of options.prompt) {
-        if (msg.role === 'user') {
-            const content = msg.content.map(c => c.type === 'text' ? c.text : '').join('');
-            promptText += `User: ${content}\n`;
-        } else if (msg.role === 'assistant') {
-            const content = msg.content.map(c => c.type === 'text' ? c.text : '').join('');
-            promptText += `Assistant: ${content}\n`;
-        } else if (msg.role === 'system') {
-            promptText += `System: ${msg.content}\n`;
-        }
+      if (msg.role === 'user') {
+        const content = Array.isArray(msg.content)
+          ? msg.content.map(c => c.type === 'text' ? c.text : '').join('')
+          : (typeof msg.content === 'string' ? msg.content : '');
+        promptText += `User: ${content}\n`;
+      } else if (msg.role === 'assistant') {
+        const content = Array.isArray(msg.content)
+          ? msg.content.map(c => c.type === 'text' ? c.text : '').join('')
+          : (typeof msg.content === 'string' ? msg.content : '');
+        promptText += `Assistant: ${content}\n`;
+      } else if (msg.role === 'system') {
+        const content = typeof msg.content === 'string' ? msg.content : '';
+        promptText += `System: ${content}\n`;
+      }
     }
-    
-    const args = [...(this.settings.args || []), "chat", "--stream"];
+
+    const args = [...(this.settings.args || []), "--approval-mode", "plan", "-o", "json"];
 
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
+      cwd: this.settings.cwd,
     });
 
     child.stdin.write(promptText);
@@ -111,34 +121,85 @@ export class QwenCodeCliLanguageModel implements LanguageModelV2 {
 
     const stream = new ReadableStream<LanguageModelV2StreamPart>({
       start(controller) {
-        const decoder = new StringDecoder("utf8");
+        let stdout = "";
+        let stderr = "";
 
         child.stdout.on("data", (data) => {
-          const text = decoder.write(data);
-          if (text) {
-            controller.enqueue({
-              type: "text-delta",
-              delta: text,
-              id: "qwen-cli-response", // Mock ID
-            });
-          }
+          stdout += data.toString();
         });
 
         child.stderr.on("data", (data) => {
+          stderr += data.toString();
           console.error(`[Qwen CLI Error]: ${data}`);
         });
 
         child.on("close", (code) => {
-          controller.enqueue({
-            type: "finish",
-            finishReason: code === 0 ? "stop" : "error",
-            usage: {
-              inputTokens: 0,
-              outputTokens: 0,
-              totalTokens: 0,
-            },
-          });
-          controller.close();
+          if (code !== 0) {
+            // Check if it's a file-not-found tool error
+            if (stderr.includes("FatalToolExecutionError") && stderr.includes("File not found")) {
+              // Log as warning but still try to parse response
+              console.warn(`[Qwen CLI Warning]: Tool execution failed (file not found), but continuing: ${stderr}`);
+
+              // Try to extract any partial response
+              try {
+                const result = JSON.parse(stdout);
+                const responseText = result.response || "";
+
+                if (responseText) {
+                  controller.enqueue({
+                    type: "text-delta",
+                    delta: responseText,
+                    id: "qwen-cli-response",
+                  });
+                }
+              } catch (e) {
+                // If no response available, provide a helpful error
+                controller.error(new Error(`Qwen CLI encountered file access issues. The AI tried to read files that don't exist in your project.`));
+                return;
+              }
+
+              controller.enqueue({
+                type: "finish",
+                finishReason: "stop",
+                usage: {
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  totalTokens: 0,
+                },
+              });
+              controller.close();
+              return;
+            }
+
+            controller.error(new Error(`Qwen CLI exited with code ${code}: ${stderr}`));
+            return;
+          }
+
+          try {
+            const result = JSON.parse(stdout);
+            const responseText = result.response || "";
+
+            if (responseText) {
+              controller.enqueue({
+                type: "text-delta",
+                delta: responseText,
+                id: "qwen-cli-response",
+              });
+            }
+
+            controller.enqueue({
+              type: "finish",
+              finishReason: "stop",
+              usage: {
+                inputTokens: 0,
+                outputTokens: 0,
+                totalTokens: 0,
+              },
+            });
+            controller.close();
+          } catch (e) {
+            controller.error(new Error(`Failed to parse Qwen CLI output: ${e}`));
+          }
         });
 
         child.on("error", (err) => {
@@ -171,7 +232,7 @@ export const createQwenCodeCli = (
     throw new Error("Text embedding not supported");
   };
   provider.imageModel = () => {
-      throw new Error("Image model not supported");
+    throw new Error("Image model not supported");
   }
   provider.chat = provider;
 

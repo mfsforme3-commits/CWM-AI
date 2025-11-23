@@ -10,20 +10,14 @@ export default defineConfig({
   },
   build: {
     sourcemap: true,
-    // target: "node16",
+    emptyOutDir: false,
     lib: {
       entry: path.resolve(__dirname, "workers/tsc/tsc_worker.ts"),
-      name: "tsc_worker",
-      fileName: "tsc_worker",
+      fileName: () => "tsc_worker.js",
       formats: ["cjs"],
     },
     rollupOptions: {
       external: ["node:fs", "node:path", "node:worker_threads", "typescript"],
-      //   output: {
-      //     dir: "dist/workers/tsc",
-      //   },
     },
-    // outDir: "dist/workers/tsc",
-    // emptyOutDir: true,
   },
 });
