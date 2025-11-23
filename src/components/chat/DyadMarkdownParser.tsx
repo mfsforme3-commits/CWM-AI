@@ -25,6 +25,7 @@ import { DyadRead } from "./DyadRead";
 import { mapActionToButton } from "./ChatInput";
 import { SuggestedAction } from "@/lib/schemas";
 import { DyadRunCommand } from "./DyadRunCommand";
+import { DyadTerminalCommand } from "./DyadTerminalCommand";
 
 interface DyadMarkdownParserProps {
   content: string;
@@ -481,7 +482,6 @@ function renderCustomTag(
           {content}
         </DyadMcpToolResult>
       );
-
     case "dyad-output":
       return (
         <DyadOutput

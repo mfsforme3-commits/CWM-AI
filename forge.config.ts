@@ -28,6 +28,10 @@ const config: ForgeConfig = {
       build: [
         { entry: "src/main.ts", config: "vite.main.config.mts" },
         { entry: "src/preload.ts", config: "vite.preload.config.mts" },
+        {
+          entry: "workers/tsc/tsc_worker.ts",
+          config: "vite.worker.config.mts",
+        },
       ],
       renderer: [{ name: "main_window", config: "vite.renderer.config.mts" }],
     }),

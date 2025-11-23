@@ -26,36 +26,77 @@ import { LM_STUDIO_BASE_URL } from "./lm_studio_utils";
 import { createOllamaProvider } from "./ollama_provider";
 import { getOllamaApiUrl } from "../handlers/local_model_ollama_handler";
 import { createFallback } from "./fallback_ai_model";
+import { createQwenCodeCli } from "./qwen_code_cli_provider";
 
 const dyadEngineUrl = process.env.DYAD_ENGINE_URL;
 
 type GeminiCliModule = typeof import("ai-sdk-provider-gemini-cli");
+type CodexCliModule = typeof import("ai-sdk-provider-codex-cli");
 
 let geminiProviderFactoryPromise:
   | Promise<GeminiCliModule["createGeminiProvider"]>
   | undefined;
+let codexProviderFactoryPromise:
+  | Promise<CodexCliModule["createCodexCli"]>
+  | undefined;
 
 async function loadGeminiProviderFactory() {
   if (!geminiProviderFactoryPromise) {
-    geminiProviderFactoryPromise = import(
-      "ai-sdk-provider-gemini-cli"
-    ).then((mod) => {
-      const possibleModules = [
-        mod as GeminiCliModule,
-        (mod as { default?: GeminiCliModule }).default,
-      ];
-      for (const candidate of possibleModules) {
-        if (candidate && typeof candidate.createGeminiProvider === "function") {
-          return candidate.createGeminiProvider;
+    geminiProviderFactoryPromise = import("ai-sdk-provider-gemini-cli").then(
+      (mod) => {
+        const possibleModules = [
+          mod as GeminiCliModule,
+          (mod as { default?: GeminiCliModule }).default,
+        ];
+        for (const candidate of possibleModules) {
+          if (
+            candidate &&
+            typeof candidate.createGeminiProvider === "function"
+          ) {
+            return candidate.createGeminiProvider;
+          }
         }
-      }
-      const availableKeys = Object.keys(mod as Record<string, unknown>);
-      throw new Error(
-        `Failed to load Gemini CLI provider module. Available keys: ${availableKeys.join(", ")}`,
-      );
-    });
+        const availableKeys = Object.keys(mod as Record<string, unknown>);
+        throw new Error(
+          `Failed to load Gemini CLI provider module. Available keys: ${availableKeys.join(", ")}`,
+        );
+      },
+    );
   }
   return geminiProviderFactoryPromise;
+}
+
+async function loadCodexProviderFactory() {
+  if (!codexProviderFactoryPromise) {
+    codexProviderFactoryPromise = import("ai-sdk-provider-codex-cli").then(
+      (mod) => {
+        const possibleModules = [
+          mod as CodexCliModule,
+          (mod as { default?: CodexCliModule }).default,
+        ];
+        for (const candidate of possibleModules) {
+          // Check for createCodexCli (the export name seen in index.d.ts)
+          // or createCodexProvider if it exists.
+          if (candidate) {
+            if (typeof candidate.createCodexCli === "function") {
+              return candidate.createCodexCli;
+            }
+            // Legacy or alternative name check
+            if (
+              typeof (candidate as any).createCodexProvider === "function"
+            ) {
+              return (candidate as any).createCodexProvider;
+            }
+          }
+        }
+        const availableKeys = Object.keys(mod as Record<string, unknown>);
+        throw new Error(
+          `Failed to load Codex CLI provider module. Available keys: ${availableKeys.join(", ")}`,
+        );
+      },
+    );
+  }
+  return codexProviderFactoryPromise;
 }
 
 const AUTO_MODELS = [
@@ -86,6 +127,7 @@ const logger = log.scope("getModelClient");
 export async function getModelClient(
   model: LargeLanguageModel,
   settings: UserSettings,
+  appPath?: string,
   // files?: File[],
 ): Promise<{
   modelClient: ModelClient;
@@ -210,6 +252,7 @@ export async function getModelClient(
             name: autoModel.name,
           },
           settings,
+          appPath,
         );
       }
     }
@@ -220,6 +263,12 @@ export async function getModelClient(
   }
   if (providerConfig.id === "gemini-cli") {
     return getGeminiCliModelClient(model, providerConfig.id);
+  }
+  if (providerConfig.id === "codex-cli") {
+    return getCodexCliModelClient(model, providerConfig.id, appPath);
+  }
+  if (providerConfig.id === "qwen-code-cli") {
+    return getQwenCodeCliModelClient(model, providerConfig.id);
   }
   return getRegularModelClient(model, settings, providerConfig);
 }
@@ -468,6 +517,44 @@ async function getGeminiCliModelClient(
   const createGeminiProvider = await loadGeminiProviderFactory();
   const provider = createGeminiProvider({
     authType: "oauth-personal",
+  });
+  return {
+    modelClient: {
+      model: provider(model.name),
+      builtinProviderId: providerId,
+    },
+    backupModelClients: [],
+  };
+}
+
+async function getQwenCodeCliModelClient(
+  model: LargeLanguageModel,
+  providerId: string,
+): Promise<{
+  modelClient: ModelClient;
+  backupModelClients: ModelClient[];
+}> {
+  const provider = createQwenCodeCli();
+  return {
+    modelClient: {
+      model: provider(model.name),
+      builtinProviderId: providerId,
+    },
+    backupModelClients: [],
+  };
+}
+
+async function getCodexCliModelClient(
+  model: LargeLanguageModel,
+  providerId: string,
+  appPath?: string,
+): Promise<{
+  modelClient: ModelClient;
+  backupModelClients: ModelClient[];
+}> {
+  const createCodexProvider = await loadCodexProviderFactory();
+  const provider = createCodexProvider({
+    defaultSettings: appPath ? { cwd: appPath } : undefined,
   });
   return {
     modelClient: {

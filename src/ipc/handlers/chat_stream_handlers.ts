@@ -103,6 +103,20 @@ const TEXT_FILE_EXTENSIONS = [
   ".css",
 ];
 
+function getCodexCliSystemPrompt(appPath: string): string {
+  return `
+# Codex CLI Environment
+You are connected to OpenAI's Codex CLI, which can autonomously run shell commands and apply patches inside the Dyad workspace.
+
+- Current app root: ${appPath}
+- ALWAYS mirror code changes with <dyad-write>, <dyad-rename>, <dyad-delete>, and <dyad-add-dependency> so Dyad records the edits.
+- Do NOT ask the user to run trivial discovery commands (ls, pwd, cat) — use the provided codebase context instead. Only run commands when necessary, and keep them scoped to the app root unless told otherwise.
+- Do NOT ask the user to run trivial discovery commands (ls, pwd, cat) — use the provided codebase context instead. Only run commands when necessary, and keep them scoped to the app root unless told otherwise.
+- When you run commands, explicitly state the command and summarize key output. Do not prompt the user for permission for simple, read-only commands, and avoid surfacing benign command logs to the user.
+- If you need the user to run something manually, emit a <dyad-run-command command="..."> tag with the exact command.
+- Treat Codex as a helper for inspections/tests; Dyad tags remain the source of truth for edits.`;
+}
+
 async function isTextFile(filePath: string): Promise<boolean> {
   const ext = path.extname(filePath).toLowerCase();
   return TEXT_FILE_EXTENSIONS.includes(ext);
@@ -145,6 +159,7 @@ async function processStreamChunks({
   abortController,
   chatId,
   processResponseChunkUpdate,
+  isCodexCli = false,
 }: {
   fullStream: AsyncIterableStream<TextStreamPart<ToolSet>>;
   fullResponse: string;
@@ -153,9 +168,14 @@ async function processStreamChunks({
   processResponseChunkUpdate: (params: {
     fullResponse: string;
   }) => Promise<string>;
+  isCodexCli?: boolean;
 }): Promise<{ fullResponse: string; incrementalResponse: string }> {
   let incrementalResponse = "";
   let inThinkingBlock = false;
+  const codexExecInputs = new Map<
+    string,
+    { command?: string; cwd?: string }
+  >();
 
   for await (const part of fullStream) {
     let chunk = "";
@@ -168,6 +188,11 @@ async function processStreamChunks({
       chunk = "</think>";
       inThinkingBlock = false;
     }
+    const toolCallId =
+      typeof (part as any).toolCallId === "string"
+        ? (part as any).toolCallId
+        : undefined;
+
     if (part.type === "text-delta") {
       chunk += part.text;
     } else if (part.type === "reasoning-delta") {
@@ -178,13 +203,46 @@ async function processStreamChunks({
 
       chunk += escapeDyadTags(part.text);
     } else if (part.type === "tool-call") {
+      if (isCodexCli && part.toolName === "exec" && toolCallId) {
+        const parsedInput = parseCodexCommandInput(part.input);
+        codexExecInputs.set(toolCallId, parsedInput);
+        continue;
+      }
       const { serverName, toolName } = parseMcpToolKey(part.toolName);
       const content = escapeDyadTags(JSON.stringify(part.input));
       chunk = `<dyad-mcp-tool-call server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-call>\n`;
     } else if (part.type === "tool-result") {
-      const { serverName, toolName } = parseMcpToolKey(part.toolName);
-      const content = escapeDyadTags(part.output);
-      chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
+      if (isCodexCli && part.toolName === "patch") {
+        const writeTags = codexPatchToDyadWrites(part.result);
+        if (writeTags.length > 0) {
+          chunk = writeTags.join("\n") + "\n";
+        } else {
+          const payload =
+            typeof part.result === "string"
+              ? part.result
+              : JSON.stringify(part.result ?? {});
+          const content = escapeDyadTags(payload);
+          chunk = `<dyad-output type="warning" message="Codex returned a patch without file content">${content}</dyad-output>\n`;
+        }
+      } else if (isCodexCli && (part.toolName === "exec" || isCodexCommandExecution(part))) {
+        const execInput = toolCallId ? codexExecInputs.get(toolCallId) : undefined;
+        if (toolCallId) {
+          codexExecInputs.delete(toolCallId);
+        }
+        const command =
+          (part.result as any)?.command ||
+          execInput?.command ||
+          "";
+        // Do not surface Codex terminal commands in the UI; let the model consume the output internally.
+        if (isTrivialCommand(command)) {
+          continue;
+        }
+        continue;
+      } else {
+        const { serverName, toolName } = parseMcpToolKey(part.toolName);
+        const content = escapeDyadTags(part.output);
+        chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
+      }
     } else if (part.type === "finish") {
       // Extract grounding metadata from Google provider
       const googleMetadata = (part as any).providerMetadata?.google;
@@ -223,6 +281,82 @@ async function processStreamChunks({
   }
 
   return { fullResponse, incrementalResponse };
+}
+
+function parseCodexCommandInput(input: unknown): {
+  command?: string;
+  cwd?: string;
+} {
+  if (!input) {
+    return {};
+  }
+  if (typeof input === "string") {
+    try {
+      const parsed = JSON.parse(input);
+      return {
+        command:
+          typeof parsed?.command === "string" ? parsed.command : undefined,
+        cwd: typeof parsed?.cwd === "string" ? parsed.cwd : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }
+  if (typeof input === "object") {
+    return {
+      command:
+        typeof (input as any)?.command === "string"
+          ? (input as any).command
+          : undefined,
+      cwd:
+        typeof (input as any)?.cwd === "string"
+          ? (input as any).cwd
+          : undefined,
+    };
+  }
+  return {};
+}
+
+function isCodexCommandExecution(part: TextStreamPart<ToolSet>): boolean {
+  const metadata = (part as any)?.providerMetadata?.["codex-cli"];
+  const toolName = (part as any)?.toolName;
+  return (
+    metadata?.itemType === "command_execution" || toolName === "exec"
+  );
+}
+
+// formatCodexCommandResult removed; Codex exec results now emit dyad-run-command for native UI.
+
+function isTrivialCommand(command: string | undefined): boolean {
+  if (!command) return false;
+  const normalized = command.trim().toLowerCase();
+  const patterns = [/^ls\b/, /^pwd\b/, /^whoami\b/, /^echo\b/];
+  return patterns.some((re) => re.test(normalized));
+}
+
+function codexPatchToDyadWrites(result: any): string[] {
+  if (!result || typeof result !== "object") {
+    return [];
+  }
+  const changes = Array.isArray((result as any).changes)
+    ? (result as any).changes
+    : [];
+  const writes: string[] = [];
+  for (const change of changes) {
+    const path = typeof change?.path === "string" ? change.path : undefined;
+    const content =
+      typeof change?.content === "string"
+        ? change.content
+        : typeof change?.new_content === "string"
+          ? change.new_content
+          : undefined;
+    if (path && content !== undefined) {
+      writes.push(
+        `<dyad-write path="${escapeXml(path)}" description="Update from Codex patch">${escapeDyadTags(content)}</dyad-write>`,
+      );
+    }
+  }
+  return writes;
 }
 
 export function registerChatStreamHandlers() {
@@ -461,7 +595,13 @@ ${componentSnippet}
       } else {
         // Normal AI processing for non-test prompts
         const { modelClient, isEngineEnabled, isSmartContextEnabled } =
-          await getModelClient(settings.selectedModel, settings);
+          await getModelClient(
+            settings.selectedModel,
+            settings,
+            getDyadAppPath(updatedChat.app.path),
+          );
+        const isCodexCli =
+          modelClient.builtinProviderId === "codex-cli";
 
         const appPath = getDyadAppPath(updatedChat.app.path);
         // When we don't have smart context enabled, we
@@ -583,6 +723,19 @@ ${componentSnippet}
               ? "build"
               : settings.selectedChatMode,
         });
+
+        // Remind the model about terminal scope and Dyad command tags.
+        systemPrompt += `
+
+# Terminal Access
+- App root: ${appPath}
+- Keep commands scoped to this directory unless the user specifies another path.
+- Surface commands and important output explicitly; avoid long-running daemons unless requested.
+- Prefer <dyad-run-command command="..."> for commands the user should trigger manually.`;
+
+        if (isCodexCli) {
+          systemPrompt += getCodexCliSystemPrompt(appPath);
+        }
 
         // Add information about mentioned apps if any
         if (otherAppsCodebaseInfo) {
@@ -949,6 +1102,7 @@ This conversation includes one or more image attachments. When the user uploads 
             abortController,
             chatId: req.chatId,
             processResponseChunkUpdate,
+            isCodexCli,
           });
           fullResponse = result.fullResponse;
           chatMessages.push({
@@ -977,6 +1131,7 @@ This conversation includes one or more image attachments. When the user uploads 
             abortController,
             chatId: req.chatId,
             processResponseChunkUpdate,
+            isCodexCli,
           });
           fullResponse = result.fullResponse;
 
@@ -1085,6 +1240,7 @@ ${problemReport.problems
                 const { modelClient } = await getModelClient(
                   settings.selectedModel,
                   settings,
+                  appPath,
                 );
 
                 const { fullStream } = await simpleStreamText({
@@ -1123,6 +1279,7 @@ ${problemReport.problems
                   abortController,
                   chatId: req.chatId,
                   processResponseChunkUpdate,
+                  isCodexCli,
                 });
                 fullResponse = result.fullResponse;
                 previousAttempts.push({
@@ -1479,14 +1636,33 @@ export function hasUnclosedDyadWrite(text: string): boolean {
   return !hasClosingTag;
 }
 
-function escapeDyadTags(text: string): string {
+function escapeDyadTags(text: unknown): string {
+  // Tool outputs can return structured objects. Convert them to strings
+  // before escaping so we do not crash while trying to call .replace.
+  let safeText: string;
+  if (typeof text === "string") {
+    safeText = text;
+  } else if (text === null || text === undefined) {
+    safeText = "";
+  } else if (typeof text === "object") {
+    try {
+      safeText = JSON.stringify(text, null, 2);
+    } catch {
+      safeText = String(text);
+    }
+  } else {
+    safeText = String(text);
+  }
+
   // Escape dyad tags in reasoning content
   // We are replacing the opening tag with a look-alike character
   // to avoid issues where thinking content includes dyad tags
   // and are mishandled by:
   // 1. FE markdown parser
   // 2. Main process response processor
-  return text.replace(/<dyad/g, "＜dyad").replace(/<\/dyad/g, "＜/dyad");
+  return safeText
+    .replace(/<dyad/g, "＜dyad")
+    .replace(/<\/dyad/g, "＜/dyad");
 }
 
 const CODEBASE_PROMPT_PREFIX = "This is my codebase.";

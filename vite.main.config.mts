@@ -10,7 +10,11 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      external: ["better-sqlite3", "ai-sdk-provider-gemini-cli"],
+      external: [
+        "better-sqlite3",
+        "ai-sdk-provider-gemini-cli",
+        "ai-sdk-provider-codex-cli",
+      ],
       output: {
         sourcemap: true,
       },
