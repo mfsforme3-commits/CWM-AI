@@ -9,16 +9,38 @@ import {
 } from "@ai-sdk/provider";
 import { spawn } from "child_process";
 import { StringDecoder } from "string_decoder";
+import { createRequire } from "module";
+import path from "path";
 
 interface QwenCodeCliSettings {
   /**
-   * Path to the Qwen CLI executable. Defaults to 'qwen'.
+   * Path to the Qwen CLI executable. Defaults to 'qwen' or resolved from @qwen-code/qwen-code.
    */
   command?: string;
   /**
    * Arguments to pass to the Qwen CLI.
    */
   args?: string[];
+}
+
+function resolveQwenPath(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkgPath = require.resolve("@qwen-code/qwen-code/package.json");
+    const pkgDir = path.dirname(pkgPath);
+    // Check package.json for bin
+    const pkg = require(pkgPath);
+    if (typeof pkg.bin === "string") {
+      return path.join(pkgDir, pkg.bin);
+    } else if (typeof pkg.bin === "object" && pkg.bin.qwen) {
+      return path.join(pkgDir, pkg.bin.qwen);
+    }
+    // Fallback to assuming 'cli.js' or similar if bin not standard
+    return path.join(pkgDir, "cli.js");
+  } catch (error) {
+    // Fallback to global/path qwen
+    return "qwen";
+  }
 }
 
 export class QwenCodeCliLanguageModel implements LanguageModelV2 {
@@ -84,7 +106,7 @@ export class QwenCodeCliLanguageModel implements LanguageModelV2 {
     stream: ReadableStream<LanguageModelV2StreamPart>;
     warnings: LanguageModelV2CallWarning[];
   }> {
-    const command = this.settings.command || "qwen";
+    const command = this.settings.command || resolveQwenPath();
     
     let promptText = "";
     for (const msg of options.prompt) {
@@ -119,7 +141,7 @@ export class QwenCodeCliLanguageModel implements LanguageModelV2 {
             controller.enqueue({
               type: "text-delta",
               delta: text,
-              id: "qwen-cli-response", // Mock ID
+              id: "qwen-cli-response",
             });
           }
         });
