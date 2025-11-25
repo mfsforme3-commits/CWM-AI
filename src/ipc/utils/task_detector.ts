@@ -73,6 +73,8 @@ export function detectTaskType(params: TaskDetectionParams): TaskType {
         "video",
         "accessibility",
         "a11y",
+        "shadcn",
+        "radix",
     ];
 
     // Backend keywords
@@ -106,6 +108,8 @@ export function detectTaskType(params: TaskDetectionParams): TaskType {
         "postgres",
         "mongo",
         "supabase",
+        "drizzle",
+        "neon",
     ];
 
     // Check for debugging indicators first (highest priority)
@@ -129,9 +133,9 @@ export function detectTaskType(params: TaskDetectionParams): TaskType {
     if (selectedComponent) {
         const ext = getFileExtension(selectedComponent.relativePath);
         if (isFrontendExtension(ext)) {
-            frontendScore += 2; // Boost frontend score
+            frontendScore += 5; // Boost frontend score
         } else if (isBackendExtension(ext)) {
-            backendScore += 2; // Boost backend score
+            backendScore += 5; // Boost backend score
         }
     }
 
@@ -145,9 +149,9 @@ export function detectTaskType(params: TaskDetectionParams): TaskType {
         ).length;
 
         if (frontendFiles > backendFiles) {
-            frontendScore += 1;
+            frontendScore += 3;
         } else if (backendFiles > frontendFiles) {
-            backendScore += 1;
+            backendScore += 3;
         }
     }
 
