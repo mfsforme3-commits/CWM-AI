@@ -50,6 +50,130 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
+
+function handleTextDelta(
+  part: any,
+  monitor: StreamingMonitor | FastMonitor | null,
+  settings: UserSettings | undefined,
+  fullResponse: string,
+  abortController: AbortController,
+): string {
+  let chunk = part.text;
+
+  if (monitor && settings?.enableFastCorrection) {
+    const result = (monitor as any).checkChunk(fullResponse + chunk);
+
+    if (result.hasViolation && result.correction) {
+      logger.warn(`⚡ Instant abort: ${result.violationType}`);
+
+      (abortController as any)._correctionNeeded = result.correction;
+      (abortController as any)._violationType = result.violationType;
+
+      abortController.abort();
+    }
+  }
+
+  if (monitor && settings?.enableRealtimeMonitoring && !(monitor instanceof FastMonitor)) {
+    monitor.analyzeChunk(chunk).catch((error: Error) => {
+      logger.error("Monitor error:", error);
+    });
+  }
+
+  return chunk;
+}
+
+function handleToolCall(
+  part: any,
+  isCodexCli: boolean,
+  toolCallId: string | undefined,
+  codexExecInputs: Map<string, { command?: string; cwd?: string }>,
+): { chunk: string; shouldContinue: boolean } {
+  if (isCodexCli && part.toolName === "exec" && toolCallId) {
+    const parsedInput = parseCodexCommandInput(part.input);
+    codexExecInputs.set(toolCallId, parsedInput);
+    return { chunk: "", shouldContinue: true };
+  }
+  const { serverName, toolName } = parseMcpToolKey(part.toolName);
+  const content = escapeDyadTags(JSON.stringify(part.input));
+  const chunk = `<dyad-mcp-tool-call server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-call>\n`;
+  return { chunk, shouldContinue: false };
+}
+
+function handleToolResult(
+  part: any,
+  isCodexCli: boolean,
+  toolCallId: string | undefined,
+  codexExecInputs: Map<string, { command?: string; cwd?: string }>,
+): { chunk: string; shouldContinue: boolean } {
+  const toolResult = (part as any).result;
+  let chunk = "";
+
+  if (isCodexCli && part.toolName === "patch") {
+    const writeTags = codexPatchToDyadWrites(toolResult);
+    if (writeTags.length > 0) {
+      chunk = writeTags.join("\n") + "\n";
+    } else {
+      const payload =
+        typeof toolResult === "string"
+          ? toolResult
+          : JSON.stringify(toolResult ?? {});
+      const content = escapeDyadTags(payload);
+      chunk = `<dyad-output type="warning" message="Codex returned a patch without file content">${content}</dyad-output>\n`;
+    }
+  } else if (isCodexCli && (part.toolName === "exec" || isCodexCommandExecution(part))) {
+    const execInput = toolCallId ? codexExecInputs.get(toolCallId) : undefined;
+    if (toolCallId) {
+      codexExecInputs.delete(toolCallId);
+    }
+    const command = (toolResult as any)?.command || execInput?.command || "";
+    if (isTrivialCommand(command)) {
+      return { chunk: "", shouldContinue: true };
+    }
+    const { serverName, toolName } = parseMcpToolKey(part.toolName);
+    const content = escapeDyadTags(toolResult);
+    chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
+  } else {
+    const { serverName, toolName } = parseMcpToolKey(part.toolName);
+    let content = escapeDyadTags(part.output);
+    if (toolName === "exec" || toolName === "execute_command") {
+      try {
+        const outputObj =
+          typeof part.output === "string"
+            ? JSON.parse(part.output)
+            : part.output;
+        if (outputObj && typeof outputObj.stdout === "string") {
+          content = escapeDyadTags(outputObj.stdout);
+          if (outputObj.stderr) {
+            content += `\n\n[Stderr]:\n${escapeDyadTags(outputObj.stderr)}`;
+          }
+        }
+      } catch { }
+    }
+    chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
+  }
+
+  return { chunk, shouldContinue: false };
+}
+
+function handleFinish(part: any): string {
+  const googleMetadata = (part as any).providerMetadata?.google;
+  if (googleMetadata?.groundingMetadata) {
+    const grounding = googleMetadata.groundingMetadata;
+    if (grounding.groundingChunks && grounding.groundingChunks.length > 0) {
+      let sourcesText = "\n\n**Sources**:\n";
+      grounding.groundingChunks.forEach((chunk: any, index: number) => {
+        const title = chunk.web?.title || `Source ${index + 1}`;
+        const uri = chunk.web?.uri;
+        if (uri) {
+          sourcesText += `${index + 1}. [${title}](${uri})\n`;
+        }
+      });
+      return sourcesText;
+    }
+  }
+  return "";
+}
+
 import { getMaxTokens, getTemperature } from "../utils/token_utils";
 import { MAX_CHAT_TURNS_IN_CONTEXT } from "@/constants/settings_constants";
 import { validateChatContext } from "../utils/context_paths_utils";
@@ -315,32 +439,7 @@ async function processStreamChunks({
         : undefined;
 
     if (part.type === "text-delta") {
-      chunk += part.text;
-
-      // INSTANT monitoring - check EVERY chunk, no delays
-      if (monitor && settings?.enableFastCorrection) {
-        const result = (monitor as any).checkChunk(fullResponse + chunk);
-
-        // INSTANT ABORT on violation
-        if (result.hasViolation && result.correction) {
-          logger.warn(`⚡ Instant abort: ${result.violationType}`);
-
-          // Store correction
-          (abortController as any)._correctionNeeded = result.correction;
-          (abortController as any)._violationType = result.violationType;
-
-          // STOP NOW
-          abortController.abort();
-          break;
-        }
-      }
-
-      // Legacy monitor (slower, async)
-      if (monitor && settings?.enableRealtimeMonitoring && !(monitor instanceof FastMonitor)) {
-        monitor.analyzeChunk(chunk).catch((error: Error) => {
-          logger.error("Monitor error:", error);
-        });
-      }
+      chunk += handleTextDelta(part, monitor, settings, fullResponse, abortController);
     } else if (part.type === "reasoning-delta") {
       if (!inThinkingBlock) {
         chunk = "<think>";
@@ -349,86 +448,15 @@ async function processStreamChunks({
 
       chunk += escapeDyadTags(part.text);
     } else if (part.type === "tool-call") {
-      if (isCodexCli && part.toolName === "exec" && toolCallId) {
-        const parsedInput = parseCodexCommandInput(part.input);
-        codexExecInputs.set(toolCallId, parsedInput);
-        continue;
-      }
-      const { serverName, toolName } = parseMcpToolKey(part.toolName);
-      const content = escapeDyadTags(JSON.stringify(part.input));
-      chunk = `<dyad-mcp-tool-call server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-call>\n`;
+      const result = handleToolCall(part, isCodexCli, toolCallId, codexExecInputs);
+      if (result.shouldContinue) continue;
+      chunk = result.chunk;
     } else if (part.type === "tool-result") {
-      // Cast to any because the TypeScript definition for ToolResultPart might be incomplete regarding 'result'
-      const toolResult = (part as any).result;
-
-      if (isCodexCli && part.toolName === "patch") {
-        const writeTags = codexPatchToDyadWrites(toolResult);
-        if (writeTags.length > 0) {
-          chunk = writeTags.join("\n") + "\n";
-        } else {
-          const payload =
-            typeof toolResult === "string"
-              ? toolResult
-              : JSON.stringify(toolResult ?? {});
-          const content = escapeDyadTags(payload);
-          chunk = `<dyad-output type="warning" message="Codex returned a patch without file content">${content}</dyad-output>\n`;
-        }
-      } else if (isCodexCli && (part.toolName === "exec" || isCodexCommandExecution(part))) {
-        const execInput = toolCallId ? codexExecInputs.get(toolCallId) : undefined;
-        if (toolCallId) {
-          codexExecInputs.delete(toolCallId);
-        }
-        const command =
-          (toolResult as any)?.command ||
-          execInput?.command ||
-          "";
-        // Do not surface Codex terminal commands in the UI; let the model consume the output internally.
-        if (isTrivialCommand(command)) {
-          continue;
-        }
-        // Fallback to standard MCP display for non-trivial commands
-        const { serverName, toolName } = parseMcpToolKey(part.toolName);
-        const content = escapeDyadTags(toolResult);
-        chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
-      } else {
-        const { serverName, toolName } = parseMcpToolKey(part.toolName);
-        let content = escapeDyadTags(part.output);
-
-        // Optimize exec output display
-        if (toolName === "exec" || toolName === "execute_command") {
-          try {
-            const outputObj =
-              typeof part.output === "string"
-                ? JSON.parse(part.output)
-                : part.output;
-            if (outputObj && typeof outputObj.stdout === "string") {
-              content = escapeDyadTags(outputObj.stdout);
-              if (outputObj.stderr) {
-                content += `\n\n[Stderr]:\n${escapeDyadTags(outputObj.stderr)}`;
-              }
-            }
-          } catch { }
-        }
-
-        chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
-      }
+      const result = handleToolResult(part, isCodexCli, toolCallId, codexExecInputs);
+      if (result.shouldContinue) continue;
+      chunk = result.chunk;
     } else if (part.type === "finish") {
-      // Extract grounding metadata from Google provider
-      const googleMetadata = (part as any).providerMetadata?.google;
-      if (googleMetadata?.groundingMetadata) {
-        const grounding = googleMetadata.groundingMetadata;
-        if (grounding.groundingChunks && grounding.groundingChunks.length > 0) {
-          let sourcesText = "\n\n**Sources**:\n";
-          grounding.groundingChunks.forEach((chunk: any, index: number) => {
-            const title = chunk.web?.title || `Source ${index + 1}`;
-            const uri = chunk.web?.uri;
-            if (uri) {
-              sourcesText += `${index + 1}. [${title}](${uri})\n`;
-            }
-          });
-          chunk += sourcesText;
-        }
-      }
+      chunk = handleFinish(part);
     }
 
     if (!chunk) {

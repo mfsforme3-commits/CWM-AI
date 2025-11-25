@@ -1,5 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { getUserDataPath } from "../paths/paths";
 import {
   UserSettingsSchema,
@@ -46,7 +46,13 @@ export function getSettingsFilePath(): string {
   return path.join(getUserDataPath(), SETTINGS_FILE);
 }
 
-export function readSettings(): UserSettings {
+let settingsCache: UserSettings | null = null;
+export function readSettings(
+  options: { noCache?: boolean } = {},
+): UserSettings {
+  if (settingsCache && !options.noCache) {
+    return settingsCache;
+  }
   try {
     const filePath = getSettingsFilePath();
     if (!fs.existsSync(filePath)) {

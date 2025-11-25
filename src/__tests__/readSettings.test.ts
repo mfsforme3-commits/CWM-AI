@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { safeStorage } from "electron";
 import { readSettings, getSettingsFilePath } from "@/main/settings";
 import { getUserDataPath } from "@/paths/paths";
 import { UserSettings } from "@/lib/schemas";
 
 // Mock dependencies
-vi.mock("node:fs");
-vi.mock("node:path");
+vi.mock("node:fs", () => ({
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+}));
+vi.mock("node:path", () => ({
+  join: vi.fn(),
+}));
 vi.mock("electron", () => ({
   safeStorage: {
     isEncryptionAvailable: vi.fn(),
@@ -44,7 +50,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(false);
       mockFs.writeFileSync.mockImplementation(() => {});
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockFs.existsSync).toHaveBeenCalledWith(mockSettingsPath);
       expect(mockFs.writeFileSync).toHaveBeenCalledWith(
@@ -67,6 +73,9 @@ describe("readSettings", () => {
             "provider": "auto",
           },
           "selectedTemplateId": "react",
+          "taskModels": {
+            "useTaskBasedSwitching": false,
+          },
           "telemetryConsent": "unset",
           "telemetryUserId": "[scrubbed]",
         }
@@ -88,7 +97,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockFs.readFileSync).toHaveBeenCalledWith(
         mockSettingsPath,
@@ -121,7 +130,7 @@ describe("readSettings", () => {
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
       mockSafeStorage.decryptString.mockReturnValue("decrypted-api-key");
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockSafeStorage.decryptString).toHaveBeenCalledWith(
         Buffer.from("encrypted-api-key", "base64"),
@@ -144,7 +153,7 @@ describe("readSettings", () => {
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
       mockSafeStorage.decryptString.mockReturnValue("decrypted-github-token");
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockSafeStorage.decryptString).toHaveBeenCalledWith(
         Buffer.from("encrypted-github-token", "base64"),
@@ -175,7 +184,7 @@ describe("readSettings", () => {
         .mockReturnValueOnce("decrypted-refresh-token")
         .mockReturnValueOnce("decrypted-access-token");
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockSafeStorage.decryptString).toHaveBeenCalledTimes(2);
       expect(result.supabase?.refreshToken).toEqual({
@@ -207,7 +216,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockSafeStorage.decryptString).not.toHaveBeenCalled();
       expect(result.githubAccessToken?.value).toBe("plaintext-token");
@@ -233,7 +242,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockSafeStorage.decryptString).not.toHaveBeenCalled();
       expect(result.githubAccessToken?.value).toBe(
@@ -264,7 +273,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(mockFs.readFileSync).toHaveBeenCalledWith(
         mockSettingsPath,
@@ -295,7 +304,7 @@ describe("readSettings", () => {
         throw new Error("File read error");
       });
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(scrubSettings(result)).toMatchInlineSnapshot(`
         {
@@ -313,6 +322,9 @@ describe("readSettings", () => {
             "provider": "auto",
           },
           "selectedTemplateId": "react",
+          "taskModels": {
+            "useTaskBasedSwitching": false,
+          },
           "telemetryConsent": "unset",
           "telemetryUserId": "[scrubbed]",
         }
@@ -323,7 +335,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue("invalid json");
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(result).toMatchObject({
         selectedModel: {
@@ -346,7 +358,7 @@ describe("readSettings", () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(JSON.stringify(mockFileContent));
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(result).toMatchObject({
         selectedModel: {
@@ -371,7 +383,7 @@ describe("readSettings", () => {
         throw new Error("Decryption failed");
       });
 
-      const result = readSettings();
+      const result = readSettings({ noCache: true });
 
       expect(result).toMatchObject({
         selectedModel: {

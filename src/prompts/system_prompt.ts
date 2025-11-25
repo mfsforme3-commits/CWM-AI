@@ -11,6 +11,8 @@ Analyze the user's prompt and respond with EXACTLY ONE word from this list:
 - frontend: UI/UX, React components, styling, user interactions, visual design
 - backend: APIs, databases, server logic, authentication, data processing
 - debugging: Error analysis, bug fixes, troubleshooting, code review
+- code: Writing or editing code, without a clear frontend or backend focus
+- clarification: The user's request is ambiguous and needs more information
 - general: Everything else
 
 Respond with ONLY the category name in lowercase, nothing else.`;
