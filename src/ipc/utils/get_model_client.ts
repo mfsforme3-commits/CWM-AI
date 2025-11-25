@@ -26,18 +26,13 @@ import { LM_STUDIO_BASE_URL } from "./lm_studio_utils";
 import { createOllamaProvider } from "./ollama_provider";
 import { getOllamaApiUrl } from "../handlers/local_model_ollama_handler";
 import { createFallback } from "./fallback_ai_model";
-import { createQwenCodeCli } from "./qwen_code_cli_provider";
 
 const dyadEngineUrl = process.env.DYAD_ENGINE_URL;
 
 type GeminiCliModule = typeof import("ai-sdk-provider-gemini-cli");
-type CodexCliModule = typeof import("ai-sdk-provider-codex-cli");
 
 let geminiProviderFactoryPromise:
   | Promise<GeminiCliModule["createGeminiProvider"]>
-  | undefined;
-let codexProviderFactoryPromise:
-  | Promise<CodexCliModule["createCodexCli"]>
   | undefined;
 
 async function loadGeminiProviderFactory() {
@@ -58,7 +53,7 @@ async function loadGeminiProviderFactory() {
         }
         const availableKeys = Object.keys(mod as Record<string, unknown>);
         throw new Error(
-          `Failed to load Gemini CLI provider module. Available keys: ${availableKeys.join(", ")}`,
+          `Failed to load Gemini CLI provider module. Please ensure 'ai-sdk-provider-gemini-cli' is installed. Available keys: ${availableKeys.join(", ")}`,
         );
       },
     );
@@ -66,9 +61,7 @@ async function loadGeminiProviderFactory() {
   return geminiProviderFactoryPromise;
 }
 
-import { createCodexCli } from "./codex_provider";
-
-// Removed loadCodexProviderFactory as we are using local implementation
+import { createChatMockProvider } from "./chatmock_provider";
 
 const AUTO_MODELS = [
   {
@@ -100,12 +93,28 @@ export async function getModelClient(
   settings: UserSettings,
   appPath?: string,
   // files?: File[],
+  taskType?: "frontend" | "backend" | "debugging" | "general",
 ): Promise<{
   modelClient: ModelClient;
   isEngineEnabled?: boolean;
   isSmartContextEnabled?: boolean;
 }> {
   const allProviders = await getLanguageModelProviders();
+
+  // If task-based switching is enabled and we have a task-specific model configured
+  if (
+    settings.taskModels?.useTaskBasedSwitching &&
+    taskType &&
+    taskType !== "general"
+  ) {
+    const taskModel = settings.taskModels[taskType];
+    if (taskModel) {
+      logger.info(
+        `Using task-specific model for ${taskType}: ${taskModel.provider}/${taskModel.name}`,
+      );
+      model = taskModel;
+    }
+  }
 
   const dyadApiKey = settings.providerSettings?.auto?.apiKey?.value;
 
@@ -235,11 +244,8 @@ export async function getModelClient(
   if (providerConfig.id === "gemini-cli") {
     return getGeminiCliModelClient(model, providerConfig.id);
   }
-  if (providerConfig.id === "codex-cli") {
-    return getCodexCliModelClient(model, providerConfig.id, appPath);
-  }
-  if (providerConfig.id === "qwen-code-cli") {
-    return getQwenCodeCliModelClient(model, providerConfig.id, appPath);
+  if (providerConfig.id === "chatmock") {
+    return getChatMockModelClient(model, providerConfig.id);
   }
   return getRegularModelClient(model, settings, providerConfig);
 }
@@ -498,40 +504,14 @@ async function getGeminiCliModelClient(
   };
 }
 
-async function getQwenCodeCliModelClient(
+async function getChatMockModelClient(
   model: LargeLanguageModel,
   providerId: string,
-  appPath?: string,
 ): Promise<{
   modelClient: ModelClient;
   backupModelClients: ModelClient[];
 }> {
-  const provider = createQwenCodeCli({
-    defaultSettings: {
-      cwd: appPath,
-    },
-  });
-  return {
-    modelClient: {
-      model: provider(model.name),
-      builtinProviderId: providerId,
-    },
-    backupModelClients: [],
-  };
-}
-
-async function getCodexCliModelClient(
-  model: LargeLanguageModel,
-  providerId: string,
-  appPath?: string,
-): Promise<{
-  modelClient: ModelClient;
-  backupModelClients: ModelClient[];
-}> {
-  // Use local createCodexCli
-  const provider = createCodexCli({
-    cwd: appPath,
-  });
+  const provider = createChatMockProvider();
   return {
     modelClient: {
       model: provider(model.name),

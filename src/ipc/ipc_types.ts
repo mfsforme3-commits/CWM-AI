@@ -74,7 +74,10 @@ export interface Message {
   dbTimestamp?: string | null;
   createdAt?: Date | string;
   requestId?: string | null;
+  model?: string | null;
 }
+
+export type WorkflowStep = "planning" | "docs" | "frontend" | "backend" | "testing";
 
 export interface Chat {
   id: number;
@@ -82,6 +85,8 @@ export interface Chat {
   messages: Message[];
   initialCommitHash?: string | null;
   dbTimestamp?: string | null;
+  workflowStatus?: "active" | "idle" | null;
+  workflowStep?: WorkflowStep | null;
 }
 
 export interface App {

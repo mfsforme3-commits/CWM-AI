@@ -11,6 +11,7 @@ import {
   chatStreamCountByIdAtom,
   isStreamingByIdAtom,
   recentStreamChatIdsAtom,
+  chatMetadataByIdAtom,
 } from "@/atoms/chatAtoms";
 import { IpcClient } from "@/ipc/ipc_client";
 import { isPreviewOpenAtom } from "@/atoms/viewAtoms";
@@ -37,6 +38,7 @@ export function useStreamChat({
   hasChatId = true,
 }: { hasChatId?: boolean } = {}) {
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
+  const setChatMetadataById = useSetAtom(chatMetadataByIdAtom);
   const isStreamingById = useAtomValue(isStreamingByIdAtom);
   const setIsStreamingById = useSetAtom(isStreamingByIdAtom);
   const errorById = useAtomValue(chatErrorByIdAtom);
@@ -124,7 +126,7 @@ export function useStreamChat({
               return next;
             });
           },
-          onEnd: (response: ChatResponseEnd) => {
+          onEnd: async (response: ChatResponseEnd) => {
             if (response.updatedFiles) {
               setIsPreviewOpen(true);
               refreshAppIframe();
@@ -132,6 +134,24 @@ export function useStreamChat({
                 checkProblems();
               }
             }
+            
+            // Fetch the latest chat state to get updated metadata (workflow status, etc.) and messages
+            try {
+                const updatedChat = await IpcClient.getInstance().getChat(chatId);
+                setMessagesById((prev) => {
+                    const next = new Map(prev);
+                    next.set(chatId, updatedChat.messages);
+                    return next;
+                });
+                setChatMetadataById((prev) => {
+                    const next = new Map(prev);
+                    next.set(chatId, updatedChat);
+                    return next;
+                });
+            } catch (e) {
+                console.error("Failed to refresh chat after stream:", e);
+            }
+
             if (response.extraFiles) {
               showExtraFilesToast({
                 files: response.extraFiles,
@@ -143,7 +163,6 @@ export function useStreamChat({
 
             refetchUserBudget();
 
-            // Keep the same as below
             setIsStreamingById((prev) => {
               const next = new Map(prev);
               next.set(chatId, false);
@@ -162,7 +181,6 @@ export function useStreamChat({
               return next;
             });
 
-            // Keep the same as above
             setIsStreamingById((prev) => {
               const next = new Map(prev);
               next.set(chatId, false);
@@ -194,12 +212,23 @@ export function useStreamChat({
     },
     [
       setMessagesById,
+      setChatMetadataById,
       setIsStreamingById,
       setIsPreviewOpen,
       checkProblems,
       selectedAppId,
       refetchUserBudget,
       settings,
+      setStreamCountById,
+      setErrorById,
+      setRecentStreamChatIds,
+      refreshProposal,
+      refreshChats,
+      refreshApp,
+      refreshVersions,
+      refreshAppIframe,
+      countTokens,
+      posthog
     ],
   );
 

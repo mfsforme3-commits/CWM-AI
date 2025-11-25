@@ -93,16 +93,16 @@ export const DyadMarkdownParser: React.FC<DyadMarkdownParserProps> = ({
         <React.Fragment key={index}>
           {piece.type === "markdown"
             ? piece.content && (
-                <ReactMarkdown
-                  components={{
-                    code: CodeHighlight,
-                    a: customLink,
-                  }}
-                >
-                  {piece.content}
-                </ReactMarkdown>
-              )
-            : renderCustomTag(piece.tagInfo, { isStreaming })}
+              <ReactMarkdown
+                components={{
+                  code: CodeHighlight,
+                  a: customLink,
+                }}
+              >
+                {piece.content}
+              </ReactMarkdown>
+            )
+            : renderCustomTag(piece.tagInfo, { isStreaming, chatId })}
         </React.Fragment>
       ))}
     </>
@@ -292,7 +292,7 @@ function getState({
  */
 function renderCustomTag(
   tagInfo: CustomTagInfo,
-  { isStreaming }: { isStreaming: boolean },
+  { isStreaming, chatId }: { isStreaming: boolean; chatId?: number | null },
 ): React.ReactNode {
   const { tag, attributes, content, inProgress } = tagInfo;
 
@@ -515,6 +515,7 @@ function renderCustomTag(
         <DyadRunCommand
           command={attributes.command || content || ""}
           autorun={attributes.autorun === "true"}
+          chatId={chatId}
         />
       );
 

@@ -4,6 +4,7 @@ import {
   PlusCircle,
   GitBranch,
   Info,
+  X,
 } from "lucide-react";
 import { PanelRightClose } from "lucide-react";
 import { useAtom, useAtomValue } from "jotai";
@@ -18,7 +19,7 @@ import {
 } from "../ui/tooltip";
 import { IpcClient } from "@/ipc/ipc_client";
 import { useRouter } from "@tanstack/react-router";
-import { selectedChatIdAtom } from "@/atoms/chatAtoms";
+import { selectedChatIdAtom, chatMetadataByIdAtom } from "@/atoms/chatAtoms";
 import { useChats } from "@/hooks/useChats";
 import { showError, showSuccess } from "@/lib/toast";
 import { useEffect } from "react";
@@ -28,6 +29,7 @@ import { useCheckoutVersion } from "@/hooks/useCheckoutVersion";
 import { useRenameBranch } from "@/hooks/useRenameBranch";
 import { isAnyCheckoutVersionInProgressAtom } from "@/store/appAtoms";
 import { LoadingBar } from "../ui/LoadingBar";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface ChatHeaderProps {
   isVersionPaneOpen: boolean;
@@ -47,7 +49,7 @@ export function ChatHeader({
   const { navigate } = useRouter();
   const [selectedChatId, setSelectedChatId] = useAtom(selectedChatIdAtom);
   const { refreshChats } = useChats(appId);
-  const { isStreaming } = useStreamChat();
+  const { isStreaming, streamMessage } = useStreamChat();
   const isAnyCheckoutVersionInProgress = useAtomValue(
     isAnyCheckoutVersionInProgressAtom,
   );
@@ -60,6 +62,20 @@ export function ChatHeader({
 
   const { checkoutVersion, isCheckingOutVersion } = useCheckoutVersion();
   const { renameBranch, isRenamingBranch } = useRenameBranch();
+  
+  const chatMetadataById = useAtomValue(chatMetadataByIdAtom);
+  const chat = selectedChatId ? chatMetadataById.get(selectedChatId) : null;
+  const workflowStatus = chat?.workflowStatus;
+  const workflowStep = chat?.workflowStep;
+
+  const handleWorkflowAction = (action: "next" | "stop") => {
+     if (!selectedChatId) return;
+     const prompt = action === "next" ? "/next" : "/workflow stop";
+     streamMessage({
+         chatId: selectedChatId,
+         prompt,
+     });
+  };
 
   useEffect(() => {
     if (appId) {
@@ -179,6 +195,46 @@ export function ChatHeader({
       )}
 
       {/* Why is this pt-0.5? Because the loading bar is h-1 (it always takes space) and we want the vertical spacing to be consistent.*/}
+      
+      <AnimatePresence>
+          {workflowStatus === "active" && workflowStep && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="px-4 py-2 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-100 dark:border-blue-800 flex items-center justify-between overflow-hidden"
+            >
+               <div className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+                  <span className="font-semibold">Workflow Active:</span>
+                  <span className="uppercase tracking-wider text-xs bg-blue-100 dark:bg-blue-800 px-2 py-0.5 rounded-full font-bold border border-blue-200 dark:border-blue-700">
+                    {workflowStep}
+                  </span>
+               </div>
+               <div className="flex items-center gap-2">
+                  <Button 
+                    size="sm" 
+                    variant="secondary" 
+                    className="h-7 text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 dark:bg-blue-800 dark:text-blue-100 dark:hover:bg-blue-700 border-none transition-colors"
+                    onClick={() => handleWorkflowAction("next")}
+                    disabled={isStreaming}
+                  >
+                    Next Step
+                  </Button>
+                  <Button
+                     size="icon"
+                     variant="ghost"
+                     className="h-7 w-7 text-blue-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                     onClick={() => handleWorkflowAction("stop")}
+                     title="Stop Workflow"
+                     disabled={isStreaming}
+                  >
+                     <X size={14} />
+                  </Button>
+               </div>
+            </motion.div>
+          )}
+      </AnimatePresence>
+
       <div className="@container flex items-center justify-between pb-1.5 pt-0.5">
         <div className="flex items-center space-x-2">
           <Button

@@ -6,6 +6,15 @@ export const PROVIDERS_THAT_SUPPORT_THINKING: (keyof typeof MODEL_OPTIONS)[] = [
   "auto",
 ];
 
+// Providers that should receive the THINKING_PROMPT in their system prompt
+// This includes both native thinking models (Google/Vertex) and models that benefit from structured thinking instructions
+export const PROVIDERS_WITH_THINKING_SUPPORT = [
+  "google",
+  "vertex",
+  "auto",
+  "chatmock",
+] as const;
+
 export interface ModelOption {
   name: string;
   displayName: string;
@@ -410,6 +419,15 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
   ],
   "gemini-cli": [
     {
+      name: "gemini-3",
+      displayName: "Gemini 3 (CLI)",
+      description: "Gemini 3 via Gemini CLI (Preview)",
+      maxOutputTokens: 65_536,
+      contextWindow: 2_000_000,
+      temperature: 0,
+      dollarSigns: 0,
+    },
+    {
       name: "gemini-2.5-pro",
       displayName: "Gemini 2.5 Pro (CLI)",
       description: "Gemini Pro via Gemini CLI (Free)",
@@ -428,87 +446,11 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
       dollarSigns: 0,
     },
   ],
-  "codex-cli": [
-    {
-      name: "gpt-5",
-      displayName: "GPT-5 (Codex CLI)",
-      description: "OpenAI GPT-5 via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-    {
-      name: "gpt-5-codex",
-      displayName: "GPT-5 Codex (Codex CLI)",
-      description: "OpenAI GPT-5 Codex via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-    {
-      name: "gpt-5.1",
-      displayName: "GPT-5.1 (Codex CLI)",
-      description: "OpenAI GPT-5.1 via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-    {
-      name: "gpt-5.1-codex",
-      displayName: "GPT-5.1 Codex (Codex CLI)",
-      description: "OpenAI GPT-5.1 Codex via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-    {
-      name: "gpt-5.1-codex-max",
-      displayName: "GPT-5.1 Codex Max (Codex CLI)",
-      description: "OpenAI GPT-5.1 Codex Max via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-    {
-      name: "gpt-5.1-codex-mini",
-      displayName: "GPT-5.1 Codex Mini (Codex CLI)",
-      description: "OpenAI GPT-5.1 Codex Mini via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-    {
-      name: "codex-mini",
-      displayName: "Codex Mini (Codex CLI)",
-      description: "OpenAI Codex Mini via Codex CLI (Free)",
-      maxOutputTokens: 4096,
-      contextWindow: 128_000,
-      temperature: 1,
-      dollarSigns: 0,
-    },
-  ],
-  "qwen-code-cli": [
-    {
-      name: "qwen3-coder",
-      displayName: "Qwen3 Coder (CLI)",
-      description: "Qwen3-Coder-480B-A35B via Qwen Code CLI (Free, default model)",
-      maxOutputTokens: 32_000,
-      contextWindow: 256_000,
-      temperature: 0,
-      dollarSigns: 0,
-    },
-  ],
   chatmock: [
     {
       name: "gpt-5",
       displayName: "GPT-5 (ChatMock)",
-      description: "Mocked GPT-5 via ChatMock",
+      description: "OpenAI GPT-5 via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -517,7 +459,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
     {
       name: "gpt-5-codex",
       displayName: "GPT-5 Codex (ChatMock)",
-      description: "Mocked Codex via ChatMock",
+      description: "OpenAI GPT-5 Codex via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -526,7 +468,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
     {
       name: "gpt-5.1",
       displayName: "GPT-5.1 (ChatMock)",
-      description: "Mocked GPT-5.1 via ChatMock",
+      description: "OpenAI GPT-5.1 via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -535,7 +477,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
     {
       name: "gpt-5.1-codex",
       displayName: "GPT-5.1 Codex (ChatMock)",
-      description: "Mocked GPT-5.1 Codex via ChatMock",
+      description: "OpenAI GPT-5.1 Codex via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -544,7 +486,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
     {
       name: "gpt-5.1-codex-max",
       displayName: "GPT-5.1 Codex Max (ChatMock)",
-      description: "Mocked GPT-5.1 Codex Max via ChatMock",
+      description: "OpenAI GPT-5.1 Codex Max via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -553,7 +495,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
     {
       name: "gpt-5.1-codex-mini",
       displayName: "GPT-5.1 Codex Mini (ChatMock)",
-      description: "Mocked GPT-5.1 Codex Mini via ChatMock",
+      description: "OpenAI GPT-5.1 Codex Mini via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -562,7 +504,7 @@ export const MODEL_OPTIONS: Record<string, ModelOption[]> = {
     {
       name: "codex-mini",
       displayName: "Codex Mini (ChatMock)",
-      description: "Mocked Codex Mini via ChatMock",
+      description: "OpenAI Codex Mini via ChatMock (Free with ChatGPT subscription)",
       maxOutputTokens: 4096,
       contextWindow: 128_000,
       temperature: 1,
@@ -680,20 +622,6 @@ export const CLOUD_PROVIDERS: Record<
     displayName: "Gemini CLI",
     hasFreeTier: true,
     websiteUrl: "https://github.com/google-gemini/gemini-cli",
-    gatewayPrefix: "",
-    secondary: true,
-  },
-  "codex-cli": {
-    displayName: "Codex CLI",
-    hasFreeTier: true,
-    websiteUrl: "https://github.com/ben-vargas/ai-sdk-provider-codex-cli",
-    gatewayPrefix: "",
-    secondary: true,
-  },
-  "qwen-code-cli": {
-    displayName: "Qwen Code CLI",
-    hasFreeTier: true,
-    websiteUrl: "https://github.com/QwenLM/qwen-code",
     gatewayPrefix: "",
     secondary: true,
   },

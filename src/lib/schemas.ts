@@ -91,6 +91,21 @@ export const LargeLanguageModelSchema = z.object({
 export type LargeLanguageModel = z.infer<typeof LargeLanguageModelSchema>;
 
 /**
+ * Zod schema for task-based model configuration
+ */
+export const TaskModelsSchema = z.object({
+  frontend: LargeLanguageModelSchema.optional(),
+  backend: LargeLanguageModelSchema.optional(),
+  debugging: LargeLanguageModelSchema.optional(),
+  useTaskBasedSwitching: z.boolean().optional(),
+});
+
+/**
+ * Type derived from the TaskModelsSchema
+ */
+export type TaskModels = z.infer<typeof TaskModelsSchema>;
+
+/**
  * Zod schema for provider settings
  * Regular providers use only apiKey. Vertex has additional optional fields.
  */
@@ -246,6 +261,17 @@ export const UserSettingsSchema = z.object({
   releaseChannel: ReleaseChannelSchema,
   runtimeMode2: RuntimeMode2Schema.optional(),
   customNodePath: z.string().optional().nullable(),
+  taskModels: TaskModelsSchema.optional(),
+  ultrathinkModel: LargeLanguageModelSchema.optional(),
+  enableAIRouter: z.boolean().optional(),
+  routerModel: LargeLanguageModelSchema.optional(),
+  enableCorrectiveAgent: z.boolean().optional().default(true),
+  maxCorrectionAttempts: z.number().optional().default(2),
+  enableRealtimeMonitoring: z.boolean().optional().default(true),
+  monitoringInterval: z.number().optional().default(100), // ms between chunk analyses
+  enableFastCorrection: z.boolean().optional().default(true), // Stop-correct-resume pattern
+  checkIntervalChars: z.number().optional().default(50), // Check every N characters
+  autoApproveTerminalCommands: z.boolean().optional(),
 
   ////////////////////////////////
   // E2E TESTING ONLY.

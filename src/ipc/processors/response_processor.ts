@@ -29,6 +29,9 @@ import {
 import { storeDbTimestampAtCurrentVersion } from "../utils/neon_timestamp_utils";
 
 import { FileUploadsState } from "../utils/file_uploads_state";
+import { validateResponse, formatValidationErrors } from "../utils/response_validator";
+import { logViolation } from "../utils/guardrail_logger";
+import { attemptCorrection } from "../utils/corrective_agent";
 
 const readFile = fs.promises.readFile;
 const logger = log.scope("response_processor");
@@ -65,6 +68,9 @@ export async function processFullResponseActions(
   error?: string;
   extraFiles?: string[];
   extraFilesError?: string;
+  needsCorrection?: boolean;
+  correctivePrompt?: string;
+  originalError?: string;
 }> {
   const fileUploadsState = FileUploadsState.getInstance();
   const fileUploadsMap = fileUploadsState.getFileUploadsForChat(chatId);
@@ -94,7 +100,7 @@ export async function processFullResponseActions(
       logger.error("Error creating Neon branch at current version:", error);
       throw new Error(
         "Could not create Neon branch; database versioning functionality is not working: " +
-          error,
+        error,
       );
     }
   }
@@ -110,6 +116,77 @@ export async function processFullResponseActions(
   const errors: Output[] = [];
 
   try {
+    // Validate response for prohibited patterns
+    const validation = validateResponse(fullResponse, {
+      mode: (chatWithApp as any).workflowStep ? 'build' : (settings.selectedChatMode || 'build'),
+      workflowStep: (chatWithApp as any).workflowStep || null,
+      modelProvider: settings.selectedModel.provider,
+    });
+
+    if (!validation.isValid) {
+      logger.error('Response validation failed:', validation.violations);
+
+      // Log violations for analytics
+      for (const violation of validation.violations) {
+        logViolation({
+          timestamp: new Date(),
+          chatId,
+          violationType: violation.type,
+          mode: settings.selectedChatMode || 'build',
+          workflowStep: (chatWithApp as any).workflowStep || undefined,
+          model: settings.selectedModel.name,
+          provider: settings.selectedModel.provider,
+          context: violation.context,
+        });
+      }
+
+      // Attempt correction if router model is available and enabled
+      if (
+        settings.enableCorrectiveAgent &&
+        settings.enableAIRouter &&
+        settings.routerModel
+      ) {
+        logger.info('Attempting automatic correction with router model');
+
+        try {
+          // Note: We don't have the original user prompt here in response_processor
+          // We'll need to pass it from chat_stream_handlers or reconstruct it
+          // For now, using fullResponse as a placeholder
+          const correction = await attemptCorrection({
+            userPrompt: fullResponse.substring(0, 200) + '...', // TODO: Pass actual user prompt
+            modelResponse: fullResponse,
+            violations: validation.violations,
+            routerModel: settings.routerModel,
+            settings,
+            appPath,
+            chatId,
+          });
+
+          if (correction.shouldRetry && correction.prompt) {
+            logger.info('Router provided corrective instruction');
+            return {
+              needsCorrection: true,
+              correctivePrompt: correction.prompt,
+              originalError: formatValidationErrors(validation.violations),
+            };
+          }
+
+          logger.warn('Router could not provide correction:', correction.reason);
+        } catch (error) {
+          logger.error('Correction attempt failed:', error);
+        }
+      }
+
+      return {
+        error: formatValidationErrors(validation.violations),
+      };
+    }
+
+    // Log warnings but continue
+    if (validation.warnings.length > 0) {
+      logger.warn('Response validation warnings:', validation.warnings);
+    }
+
     // Extract all tags
     const dyadWriteTags = getDyadWriteTags(fullResponse);
     const dyadRenameTags = getDyadRenameTags(fullResponse);
@@ -473,17 +550,17 @@ export async function processFullResponseActions(
   } finally {
     const appendedContent = `
     ${warnings
-      .map(
-        (warning) =>
-          `<dyad-output type="warning" message="${warning.message}">${warning.error}</dyad-output>`,
-      )
-      .join("\n")}
+        .map(
+          (warning) =>
+            `<dyad-output type="warning" message="${warning.message}">${warning.error}</dyad-output>`,
+        )
+        .join("\n")}
     ${errors
-      .map(
-        (error) =>
-          `<dyad-output type="error" message="${error.message}">${error.error}</dyad-output>`,
-      )
-      .join("\n")}
+        .map(
+          (error) =>
+            `<dyad-output type="error" message="${error.message}">${error.error}</dyad-output>`,
+        )
+        .join("\n")}
     `;
     if (appendedContent.length > 0) {
       await db

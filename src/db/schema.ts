@@ -57,6 +57,12 @@ export const chats = sqliteTable("chats", {
     .references(() => apps.id, { onDelete: "cascade" }),
   title: text("title"),
   initialCommitHash: text("initial_commit_hash"),
+  workflowStatus: text("workflow_status", {
+    enum: ["idle", "active", "paused"],
+  }).default("idle"),
+  workflowStep: text("workflow_step", {
+    enum: ["planning", "docs", "frontend", "backend", "testing"],
+  }),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
@@ -74,6 +80,7 @@ export const messages = sqliteTable("messages", {
   }),
   commitHash: text("commit_hash"),
   requestId: text("request_id"),
+  model: text("model"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),

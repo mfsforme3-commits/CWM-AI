@@ -31,6 +31,8 @@ import { registerPortalHandlers } from "./handlers/portal_handlers";
 import { registerPromptHandlers } from "./handlers/prompt_handlers";
 import { registerHelpBotHandlers } from "./handlers/help_bot_handlers";
 import { registerMcpHandlers } from "./handlers/mcp_handlers";
+import { registerExecHandlers } from "./handlers/exec_handlers";
+import { registerCompactContextHandlers } from "./handlers/compact_context_handlers";
 
 export function registerIpcHandlers() {
   // Register all IPC handlers by category
@@ -67,4 +69,6 @@ export function registerIpcHandlers() {
   registerPromptHandlers();
   registerHelpBotHandlers();
   registerMcpHandlers();
+  registerExecHandlers();
+  registerCompactContextHandlers();
 }

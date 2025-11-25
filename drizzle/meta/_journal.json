@@ -113,6 +113,20 @@
       "when": 1760474402750,
       "tag": "0015_complete_old_lace",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1764044666955,
+      "tag": "0016_special_catseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1764051788850,
+      "tag": "0017_skinny_johnny_storm",
+      "breakpoints": true
     }
   ]
 }

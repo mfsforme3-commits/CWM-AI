@@ -1,9 +1,10 @@
-import type { Message } from "@/ipc/ipc_types";
+import type { Message, Chat } from "@/ipc/ipc_types";
 import { atom } from "jotai";
 import type { ChatSummary } from "@/lib/schemas";
 
 // Per-chat atoms implemented with maps keyed by chatId
 export const chatMessagesByIdAtom = atom<Map<number, Message[]>>(new Map());
+export const chatMetadataByIdAtom = atom<Map<number, Chat>>(new Map());
 export const chatErrorByIdAtom = atom<Map<number, string | null>>(new Map());
 
 // Atom to hold the currently selected chat ID

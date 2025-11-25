@@ -17,6 +17,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import {
   constructSystemPrompt,
   readAiRules,
+  ROUTER_SYSTEM_PROMPT,
 } from "../../prompts/system_prompt";
 import {
   SUPABASE_AVAILABLE_SYSTEM_PROMPT,
@@ -45,6 +46,10 @@ import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
 import { readFile, writeFile, unlink } from "fs/promises";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 import { getMaxTokens, getTemperature } from "../utils/token_utils";
 import { MAX_CHAT_TURNS_IN_CONTEXT } from "@/constants/settings_constants";
 import { validateChatContext } from "../utils/context_paths_utils";
@@ -77,6 +82,10 @@ import { replacePromptReference } from "../utils/replacePromptReference";
 import { mcpManager } from "../utils/mcp_manager";
 import z from "zod";
 import { maybeRunGeminiWebSearch } from "../utils/gemini_web_search";
+import { detectTaskType } from "../utils/task_detector";
+import { WorkflowManager, WorkflowStep } from "../workflow/workflow_manager";
+import { StreamingMonitor } from "../utils/streaming_monitor";
+import { FastMonitor } from "../utils/fast_monitor";
 
 type AsyncIterableStream<T> = AsyncIterable<T> & ReadableStream<T>;
 
@@ -103,18 +112,123 @@ const TEXT_FILE_EXTENSIONS = [
   ".css",
 ];
 
-function getCodexCliSystemPrompt(appPath: string): string {
+function getChatMockSystemPrompt(appPath: string, chatMode: "build" | "ask" | "agent" = "build"): string {
+  // In agent mode, Codex should use MCP tools, not dyad tags
+  if (chatMode === "agent") {
+    return `
+# ChatMock / Codex in Agent Mode
+
+You are connected to ChatMock (proxying to OpenAI Codex) in DYAD's Agent mode.
+
+## ⚠️ CRITICAL INSTRUCTIONS FOR CODEX IN AGENT MODE
+
+**YOU ARE IN AGENT MODE - NOT BUILD MODE:**
+- In this mode, you SHOULD use MCP (Model Context Protocol) tools
+- You have access to \`execute_command\` or \`exec\` tool for running shell commands
+- You SHOULD NOT use \`<dyad-write>\`, \`<dyad-run-command>\`, or any dyad tags in this phase
+- Your job is to gather information using tools, NOT to write code
+
+## Use execute_command Tool For:
+- **Running shell commands**: Use the \`execute_command\` or \`exec\` tool with curl, npm, ls, cat, grep, etc.
+- **Fetching API docs**: \`curl -s https://api.example.com/docs\`
+- **Checking packages**: \`npm view react version\`
+- **Exploring codebase**: \`ls -la\`, \`cat package.json\`, \`grep -r "pattern"\`
+- **Testing APIs**: \`curl -X GET https://api.example.com/endpoint\`
+
+## Do NOT:
+- Use \`<dyad-write>\` tags (not available in agent mode)
+- Use \`<dyad-run-command>\` tags (not available in agent mode)  
+- Use any Codex CLI native tools (apply_patch, turbo_edit, etc.)
+- Use web-search for things you can fetch with execute_command
+
+## Remember:
+- You are gathering information, not writing code
+- Use execute_command MCP tool to run commands
+- Tool outputs will be shown to you and the user
+- After you gather info, the build phase will handle code generation
+
+Current app root: ${appPath}
+`;
+  }
+
+  // Build mode instructions (original)
   return `
-# Codex CLI Environment
-You are connected to OpenAI's Codex CLI, which can autonomously run shell commands and apply patches inside the Dyad workspace.
+# ChatMock Environment
+You are connected to ChatMock, which proxies requests to OpenAI via your local machine.
+This is a high-capability environment that supports "Vibe Coding" — fast, aesthetic, and functional app building.
 
 - Current app root: ${appPath}
-- ALWAYS mirror code changes with <dyad-write>, <dyad-rename>, <dyad-delete>, and <dyad-add-dependency> so Dyad records the edits.
-- Do NOT ask the user to run trivial discovery commands (ls, pwd, cat) — use the provided codebase context instead. Only run commands when necessary, and keep them scoped to the app root unless told otherwise.
-- Do NOT ask the user to run trivial discovery commands (ls, pwd, cat) — use the provided codebase context instead. Only run commands when necessary, and keep them scoped to the app root unless told otherwise.
-- When you run commands, explicitly state the command and summarize key output. Do not prompt the user for permission for simple, read-only commands, and avoid surfacing benign command logs to the user.
-- If you need the user to run something manually, emit a <dyad-run-command command="..."> tag with the exact command.
-- Treat Codex as a helper for inspections/tests; Dyad tags remain the source of truth for edits.`;
+
+## ⚠️ CRITICAL: YOU DO NOT HAVE CODEX CLI TOOLS ⚠️
+
+**YOU ARE IN DYAD, NOT CODEX CLI. READ THIS CAREFULLY:**
+
+### ❌ PROHIBITED - DO NOT USE THESE:
+- **NEVER** use \`apply_patch\`
+- **NEVER** use \`turbo_edit\`
+- **NEVER** use \`patch_file\`
+- **NEVER** use \`edit_file\`
+- **NEVER** use \`write_file\`
+- **NEVER** use any Codex CLI native tools
+- **NEVER** try to use any file editing tools other than Dyad tags
+
+### ✅ REQUIRED - ONLY USE THESE DYAD TAGS:
+
+#### File Operations (MANDATORY)
+\`\`\`xml
+<dyad-write path="src/file.tsx" description="Brief description">
+Full file content here
+</dyad-write>
+\`\`\`
+
+- **\`<dyad-write>\`** - Create or update files (FULL FILE CONTENT)
+- **\`<dyad-rename from="old.tsx" to="new.tsx">\`** - Rename/move files
+- **\`<dyad-delete path="file.tsx">\`** - Delete files
+
+#### Commands & Dependencies
+- **\`<dyad-run-command command="npm install">\`** - Run shell commands
+- **\`<dyad-add-dependency packages="pkg1 pkg2">\`** - Install packages (space-separated, NOT commas)
+
+#### App Lifecycle
+- **\`<dyad-command type="rebuild">\`** - Rebuild app
+- **\`<dyad-command type="restart">\`** - Restart dev server
+- **\`<dyad-command type="refresh">\`** - Refresh preview
+
+## Why Dyad Tags Are Required
+Dyad needs to track ALL file changes through its tag system so:
+- The UI can display your changes
+- Version control works correctly
+- Users can see what you're doing
+- Turbo Edits can optimize file operations
+
+## If You're Confused
+- If you think you should use \`apply_patch\` → Use \`<dyad-write>\` instead
+- If you think you should use \`turbo_edit\` → Use \`<dyad-write>\` instead
+- If you want to edit a file → Use \`<dyad-write>\` with FULL file content
+- If you want to run a command → Use \`<dyad-run-command>\`
+
+## ❌ DO NOT USE WEB SEARCH FOR LOCAL OPERATIONS
+
+**CRITICAL**: Do NOT use web search to inspect this project's files or structure. Use terminal commands instead:
+
+### Use Terminal Commands For:
+- **List files**: Use \`<dyad-run-command command="ls">\` NOT web search
+- **Current directory**: Use \`<dyad-run-command command="pwd">\` NOT web search
+- **Read files**: Use \`<dyad-run-command command="cat file.txt">\` NOT web search
+- **Find files**: Use \`<dyad-run-command command="find . -name '*.tsx'">\` NOT web search
+- **Search in files**: Use \`<dyad-run-command command="grep -r 'pattern' .">\` NOT web search
+- **Check file structure**: Use the codebase context provided to you
+
+### Use Web Search ONLY For:
+- External library documentation (e.g., React, Tailwind docs)
+- Latest package versions on npm
+- API documentation for third-party services
+- Current best practices for external tools
+
+**You have full codebase context at the start of the conversation. Use it! Don't search the web for information that's already in your context.**
+
+**REPEAT: You are in DYAD. Use \`<dyad-write>\` tags EXCLUSIVELY for all code changes.**
+`;
 }
 
 async function isTextFile(filePath: string): Promise<boolean> {
@@ -137,6 +251,9 @@ function parseMcpToolKey(toolKey: string): {
   serverName: string;
   toolName: string;
 } {
+  if (!toolKey || typeof toolKey !== "string") {
+    return { serverName: "", toolName: "" };
+  }
   const separator = "__";
   const lastIndex = toolKey.lastIndexOf(separator);
   if (lastIndex === -1) {
@@ -160,6 +277,8 @@ async function processStreamChunks({
   chatId,
   processResponseChunkUpdate,
   isCodexCli = false,
+  monitor = null,
+  settings,
 }: {
   fullStream: AsyncIterableStream<TextStreamPart<ToolSet>>;
   fullResponse: string;
@@ -169,6 +288,8 @@ async function processStreamChunks({
     fullResponse: string;
   }) => Promise<string>;
   isCodexCli?: boolean;
+  monitor?: StreamingMonitor | FastMonitor | null;
+  settings?: UserSettings;
 }): Promise<{ fullResponse: string; incrementalResponse: string }> {
   let incrementalResponse = "";
   let inThinkingBlock = false;
@@ -195,6 +316,31 @@ async function processStreamChunks({
 
     if (part.type === "text-delta") {
       chunk += part.text;
+
+      // INSTANT monitoring - check EVERY chunk, no delays
+      if (monitor && settings?.enableFastCorrection) {
+        const result = (monitor as any).checkChunk(fullResponse + chunk);
+
+        // INSTANT ABORT on violation
+        if (result.hasViolation && result.correction) {
+          logger.warn(`⚡ Instant abort: ${result.violationType}`);
+
+          // Store correction
+          (abortController as any)._correctionNeeded = result.correction;
+          (abortController as any)._violationType = result.violationType;
+
+          // STOP NOW
+          abortController.abort();
+          break;
+        }
+      }
+
+      // Legacy monitor (slower, async)
+      if (monitor && settings?.enableRealtimeMonitoring && !(monitor instanceof FastMonitor)) {
+        monitor.analyzeChunk(chunk).catch((error: Error) => {
+          logger.error("Monitor error:", error);
+        });
+      }
     } else if (part.type === "reasoning-delta") {
       if (!inThinkingBlock) {
         chunk = "<think>";
@@ -246,7 +392,24 @@ async function processStreamChunks({
         chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
       } else {
         const { serverName, toolName } = parseMcpToolKey(part.toolName);
-        const content = escapeDyadTags(part.output);
+        let content = escapeDyadTags(part.output);
+
+        // Optimize exec output display
+        if (toolName === "exec" || toolName === "execute_command") {
+          try {
+            const outputObj =
+              typeof part.output === "string"
+                ? JSON.parse(part.output)
+                : part.output;
+            if (outputObj && typeof outputObj.stdout === "string") {
+              content = escapeDyadTags(outputObj.stdout);
+              if (outputObj.stderr) {
+                content += `\n\n[Stderr]:\n${escapeDyadTags(outputObj.stderr)}`;
+              }
+            }
+          } catch { }
+        }
+
         chunk = `<dyad-mcp-tool-result server="${serverName}" tool="${toolName}">\n${content}\n</dyad-mcp-tool-result>\n`;
       }
     } else if (part.type === "finish") {
@@ -367,11 +530,15 @@ function codexPatchToDyadWrites(result: any): string[] {
 
 export function registerChatStreamHandlers() {
   ipcMain.handle("chat:stream", async (event, req: ChatStreamParams) => {
+    let abortController: AbortController;
+    let attachmentPaths: string[] = [];
+    let placeholderAssistantMessage: any;
+
     try {
       const fileUploadsState = FileUploadsState.getInstance();
       let dyadRequestId: string | undefined;
       // Create an AbortController for this stream
-      const abortController = new AbortController();
+      abortController = new AbortController();
       activeStreams.set(req.chatId, abortController);
 
       // Get the chat to check for existing messages
@@ -425,7 +592,7 @@ export function registerChatStreamHandlers() {
 
       // Process attachments if any
       let attachmentInfo = "";
-      let attachmentPaths: string[] = [];
+      attachmentPaths = [];
 
       if (req.attachments && req.attachments.length > 0) {
         attachmentInfo = "\n\nAttachments:\n";
@@ -553,7 +720,7 @@ ${componentSnippet}
       }
 
       // Add a placeholder assistant message immediately
-      const [placeholderAssistantMessage] = await db
+      [placeholderAssistantMessage] = await db
         .insert(messages)
         .values({
           chatId: req.chatId,
@@ -589,6 +756,8 @@ ${componentSnippet}
       // Check if this is a test prompt
       const testResponse = getTestResponse(req.prompt);
 
+      let targetModel = settings.selectedModel;
+
       if (testResponse) {
         // For test prompts, use the dedicated function
         fullResponse = await streamTestResponse(
@@ -600,38 +769,184 @@ ${componentSnippet}
         );
       } else {
         // Normal AI processing for non-test prompts
-        const { modelClient, isEngineEnabled, isSmartContextEnabled } =
-          await getModelClient(
-            settings.selectedModel,
-            settings,
-            getDyadAppPath(updatedChat.app.path),
-          );
-        const isCodexCli =
-          modelClient.builtinProviderId === "codex-cli";
 
+        // Extract codebase first for task detection
         const appPath = getDyadAppPath(updatedChat.app.path);
-        // When we don't have smart context enabled, we
-        // only include the selected component's file for codebase context.
-        //
-        // If we have selected component and smart context is enabled,
-        // we handle this specially below.
-        const chatContext =
-          req.selectedComponent && !isSmartContextEnabled
-            ? {
-                contextPaths: [
-                  {
-                    globPath: req.selectedComponent.relativePath,
-                  },
-                ],
-                smartContextAutoIncludes: [],
-              }
-            : validateChatContext(updatedChat.app.chatContext);
-
-        // Extract codebase for current app
+        const chatContext = validateChatContext(updatedChat.app.chatContext);
         const { formattedOutput: codebaseInfo, files } = await extractCodebase({
           appPath,
           chatContext,
         });
+
+        // AI Router: Use a model to classify the prompt and select target model
+        targetModel = settings.selectedModel;
+        let effectiveTaskType: any = undefined;
+        let cleanedPrompt = req.prompt;
+        let routerClassification: string | null = null;
+        let systemPromptSuffix = "";
+
+        // Check for workflow commands
+        if (req.prompt.trim().startsWith("/workflow stop")) {
+          await WorkflowManager.stopWorkflow(req.chatId);
+          cleanedPrompt = "Workflow stopped.";
+          logger.info("Workflow stopped by user");
+        } else if (req.prompt.trim().startsWith("/workflow")) {
+          const step = await WorkflowManager.startWorkflow(req.chatId);
+          // Update the prompt for the AI context (the user still sees the original command in history)
+          cleanedPrompt =
+            req.prompt.replace("/workflow", "").trim() || "Start planning.";
+          logger.info(`Starting workflow: ${step}`);
+        } else if (req.prompt.trim().startsWith("/next")) {
+          const step = await WorkflowManager.advanceStep(req.chatId);
+          if (step) {
+            cleanedPrompt = `Proceed to the next step: ${step}.`;
+            logger.info(`Advancing workflow to: ${step}`);
+          } else {
+            cleanedPrompt = "Workflow completed.";
+            logger.info("Workflow completed");
+          }
+        }
+
+        // Fetch the latest chat state (including workflow updates)
+        const chatState = await WorkflowManager.getChatState(req.chatId);
+        const isWorkflowActive = chatState?.workflowStatus === "active";
+
+        // IMMEDIATE UI UPDATE: Send the updated chat state to the frontend
+        // This ensures the workflow indicator updates instantly
+        const refreshedChat = await db.query.chats.findFirst({
+          where: eq(chats.id, req.chatId),
+          with: {
+            messages: {
+              orderBy: (messages, { asc }) => [asc(messages.createdAt)],
+            },
+            app: true,
+          },
+        });
+
+        if (refreshedChat) {
+          safeSend(event.sender, "chat:response:chunk", {
+            chatId: req.chatId,
+            messages: refreshedChat.messages,
+            // We send the full chat object if possible, or rely on messages triggering a refresh
+            // Since we can't change the frontend, sending the chunk is the best we can do.
+            // However, we can try to send a custom event if the frontend supports it,
+            // but for now we stick to the standard channel.
+          });
+        }
+
+        // AI Router: Classify prompt if enabled
+        if (settings.enableAIRouter && settings.routerModel) {
+          try {
+            logger.log("AI Router enabled. Calling router model to classify prompt...");
+            const { modelClient: routerClient } = await getModelClient(
+              settings.routerModel,
+              settings,
+              appPath,
+            );
+
+            const routerMessages: ModelMessage[] = [
+              { role: "user", content: req.prompt }
+            ];
+
+            let routerResponse = "";
+            const routerStream = await streamText({
+              model: routerClient.model,
+              system: ROUTER_SYSTEM_PROMPT,
+              messages: routerMessages,
+            });
+
+            for await (const chunk of routerStream.textStream) {
+              routerResponse += chunk;
+            }
+
+            routerClassification = routerResponse.trim().toLowerCase();
+            logger.log(`Router classified prompt as: "${routerClassification}"`);
+          } catch (error) {
+            logger.error("Router failed, will fall back to other methods:", error);
+          }
+        }
+
+        if (isWorkflowActive && chatState?.workflowStep) {
+          // Check if we should override workflow with debugging
+          if (routerClassification === "debugging" && settings.taskModels?.debugging) {
+            targetModel = settings.taskModels.debugging;
+            effectiveTaskType = "debugging";
+            logger.log("Workflow active but Router detected Debugging: Overriding model");
+          } else {
+            const step = chatState.workflowStep as WorkflowStep;
+            const taskType = WorkflowManager.getTaskTypeForStep(step);
+
+            // Override effectiveTaskType for model selection
+            if (settings.taskModels?.useTaskBasedSwitching) {
+              effectiveTaskType = taskType;
+              // If we have a specific model for this task type, use it.
+              // Otherwise, we stick with the default/selected model but use the task type context if applicable.
+              if (taskType !== "general" && settings.taskModels[taskType]) {
+                targetModel = settings.taskModels[taskType]!;
+              }
+            }
+
+            // For system prompt, we want to use the specific step name if taskType is generic
+            if (taskType === "general") {
+              effectiveTaskType = step;
+            }
+
+            // Add step-specific system prompt
+            systemPromptSuffix += WorkflowManager.getSystemPromptForStep(step);
+            logger.info(
+              `Workflow active: step=${step}, taskType=${taskType}, model=${targetModel.name}`,
+            );
+          }
+        } else if (routerClassification) {
+          // Use classification to select model
+          if (routerClassification === "ultrathink" && settings.ultrathinkModel) {
+            targetModel = settings.ultrathinkModel;
+            cleanedPrompt = req.prompt.replace(/\bultrathink\b/gi, "").trim();
+            logger.log("Router selected Ultrathink model");
+          } else if (settings.taskModels?.useTaskBasedSwitching) {
+            // Map router classification to task type
+            if (routerClassification === "frontend" && settings.taskModels.frontend) {
+              targetModel = settings.taskModels.frontend;
+              logger.log("Router selected Frontend model");
+            } else if (routerClassification === "backend" && settings.taskModels.backend) {
+              targetModel = settings.taskModels.backend;
+              logger.log("Router selected Backend model");
+            } else if (routerClassification === "debugging" && settings.taskModels.debugging) {
+              targetModel = settings.taskModels.debugging;
+              logger.log("Router selected Debugging model");
+            }
+          }
+        } else {
+          // Fallback: use keyword detection if router is disabled or failed
+          const isUltrathink = req.prompt.toLowerCase().includes("ultrathink");
+          if (isUltrathink) {
+            cleanedPrompt = req.prompt.replace(/\bultrathink\b/gi, "").trim();
+            if (settings.ultrathinkModel) {
+              targetModel = settings.ultrathinkModel;
+              logger.log("Keyword detection: Ultrathink detected");
+            }
+          } else {
+            effectiveTaskType = settings.taskModels?.useTaskBasedSwitching
+              ? detectTaskType({
+                userPrompt: req.prompt,
+                selectedComponent: req.selectedComponent || undefined,
+                codebaseFiles: files,
+              })
+              : undefined;
+          }
+        }
+
+        logger.log(`Final model selection: ${targetModel.name}, Task type: ${effectiveTaskType || "none"}`);
+
+        const { modelClient, isEngineEnabled, isSmartContextEnabled } =
+          await getModelClient(
+            targetModel,
+            settings,
+            appPath,
+            effectiveTaskType,
+          );
+        const isChatMock =
+          modelClient.builtinProviderId === "chatmock";
 
         // For smart context and selected component, we will mark the selected component's file as focused.
         // This means that we don't do the regular smart context handling, but we'll allow fetching
@@ -684,6 +999,14 @@ ${componentSnippet}
           content: message.content,
         }));
 
+        // Replace the last user message with cleaned prompt if it was cleaned
+        if (cleanedPrompt !== req.prompt && messageHistory.length > 0) {
+          const lastMessage = messageHistory[messageHistory.length - 1];
+          if (lastMessage.role === "user") {
+            lastMessage.content = cleanedPrompt;
+          }
+        }
+
         // Limit chat history based on maxChatTurnsInContext setting
         // We add 1 because the current prompt counts as a turn.
         const maxChatTurns =
@@ -722,25 +1045,46 @@ ${componentSnippet}
           );
         }
 
+        // Check if the current provider supports thinking to inject THINKING_PROMPT
+        const isThinkingProvider = modelClient.builtinProviderId === "google" || modelClient.builtinProviderId === "vertex" || modelClient.builtinProviderId === "auto" || modelClient.builtinProviderId === "chatmock";
+
         let systemPrompt = constructSystemPrompt({
           aiRules: await readAiRules(getDyadAppPath(updatedChat.app.path)),
           chatMode:
             settings.selectedChatMode === "agent"
               ? "build"
               : settings.selectedChatMode,
+          enableThinking: isThinkingProvider,
+          taskType: effectiveTaskType || routerClassification || undefined,
         });
+
+        if (systemPromptSuffix) {
+          systemPrompt += systemPromptSuffix;
+        }
 
         // Remind the model about terminal scope and Dyad command tags.
         systemPrompt += `
 
-# Terminal Access
+# Terminal Access & File Editing
 - App root: ${appPath}
 - Keep commands scoped to this directory unless the user specifies another path.
 - Surface commands and important output explicitly; avoid long-running daemons unless requested.
-- Prefer <dyad-run-command command="..."> for commands the user should trigger manually.`;
+- Use <dyad-run-command command="..."> for ANY shell command you want to execute or suggest. The user will run it.
+- Use <dyad-write path="...">...</dyad-write> for creating or editing files.
+- Use <dyad-delete path="...">...</dyad-delete> for deleting files.
+- Use <dyad-rename from="..." to="...">...</dyad-rename> for renaming/moving files.
 
-        if (isCodexCli) {
-          systemPrompt += getCodexCliSystemPrompt(appPath);
+# ⚠️ WEB SEARCH RESTRICTIONS
+- **DO NOT** use web search to find information about the local codebase (files, structure, etc.). Use \`<dyad-run-command>\` with \`ls\`, \`find\`, \`grep\`, \`cat\` instead.
+- **ONLY** use web search for:
+  1. External library documentation (e.g., "Tailwind v4 migration guide")
+  2. Real-time information (e.g., "latest npm package version")
+  3. When the user **explicitly asks** you to search the web.
+- If you can answer based on your knowledge or the provided context, **DO NOT** search the web.
+`;
+
+        if (isChatMock) {
+          systemPrompt += getChatMockSystemPrompt(appPath, settings.selectedChatMode);
         }
 
         // Add information about mentioned apps if any
@@ -822,32 +1166,32 @@ This conversation includes one or more image attachments. When the user uploads 
 
         const codebasePrefix = isEngineEnabled
           ? // No codebase prefix if engine is set, we will take of it there.
-            []
+          []
           : ([
-              {
-                role: "user",
-                content: createCodebasePrompt(codebaseInfo),
-              },
-              {
-                role: "assistant",
-                content: "OK, got it. I'm ready to help",
-              },
-            ] as const);
+            {
+              role: "user",
+              content: createCodebasePrompt(codebaseInfo),
+            },
+            {
+              role: "assistant",
+              content: "OK, got it. I'm ready to help",
+            },
+          ] as const);
 
         // If engine is enabled, we will send the other apps codebase info to the engine
         // and process it with smart context.
         const otherCodebasePrefix =
           otherAppsCodebaseInfo && !isEngineEnabled
             ? ([
-                {
-                  role: "user",
-                  content: createOtherAppsCodebasePrompt(otherAppsCodebaseInfo),
-                },
-                {
-                  role: "assistant",
-                  content: "OK.",
-                },
-              ] as const)
+              {
+                role: "user",
+                content: createOtherAppsCodebasePrompt(otherAppsCodebaseInfo),
+              },
+              {
+                role: "assistant",
+                content: "OK.",
+              },
+            ] as const)
             : [];
 
         const limitedHistoryChatMessages = limitedMessageHistory.map((msg) => ({
@@ -949,11 +1293,19 @@ This conversation includes one or more image attachments. When the user uploads 
             } satisfies OpenAIResponsesProviderOptions,
           };
 
+          // Explicitly handle gemini-cli options key
+          if (modelClient.builtinProviderId === "gemini-cli") {
+            providerOptions["gemini-cli"] = {
+              thinkingConfig: { includeThoughts: true },
+              useSearchGrounding: settings.enableProWebSearch,
+            };
+          }
+
           // Conditionally include Google thinking config only for supported models
           const selectedModelName = settings.selectedModel.name || "";
           const providerId = modelClient.builtinProviderId;
           const isVertex = providerId === "vertex";
-          const isGoogle = providerId === "google";
+          const isGoogle = providerId === "google" || providerId === "gemini-cli";
           const isAnthropic = providerId === "anthropic";
           const isPartnerModel = selectedModelName.includes("/");
           const isGeminiModel = selectedModelName.startsWith("gemini");
@@ -993,8 +1345,8 @@ This conversation includes one or more image attachments. When the user uploads 
           return streamText({
             headers: isAnthropic
               ? {
-                  "anthropic-beta": "context-1m-2025-08-07",
-                }
+                "anthropic-beta": "context-1m-2025-08-07",
+              }
               : undefined,
             maxOutputTokens: await getMaxTokens(settings.selectedModel),
             temperature: await getTemperature(settings.selectedModel),
@@ -1091,12 +1443,55 @@ This conversation includes one or more image attachments. When the user uploads 
                   inputSchema: z.object({}),
                   execute: async () => "",
                 },
+                "execute_command": {
+                  description:
+                    "Run a shell command on the local machine. Use this for listing files, reading files, running tests, etc.",
+                  inputSchema: z.object({
+                    command: z.string().describe("The shell command to execute"),
+                  }),
+                  execute: async ({ command }) => {
+                    try {
+                      const { stdout, stderr } = await execAsync(command, {
+                        cwd: getDyadAppPath(updatedChat.app.path),
+                      });
+                      return JSON.stringify({ stdout, stderr });
+                    } catch (error: any) {
+                      return JSON.stringify({
+                        stdout: error.stdout || "",
+                        stderr: error.stderr || error.message,
+                        error: error.message,
+                      });
+                    }
+                  },
+                },
+                "exec": {
+                  description:
+                    "Alias for execute_command. Run a shell command on the local machine.",
+                  inputSchema: z.object({
+                    command: z.string().describe("The shell command to execute"),
+                  }),
+                  execute: async ({ command }) => {
+                    try {
+                      const { stdout, stderr } = await execAsync(command, {
+                        cwd: getDyadAppPath(updatedChat.app.path),
+                      });
+                      return JSON.stringify({ stdout, stderr });
+                    } catch (error: any) {
+                      return JSON.stringify({
+                        stdout: error.stdout || "",
+                        stderr: error.stderr || error.message,
+                        error: error.message,
+                      });
+                    }
+                  },
+                },
               },
               webSearchTools,
             ),
             systemPromptOverride: constructSystemPrompt({
               aiRules: await readAiRules(getDyadAppPath(updatedChat.app.path)),
               chatMode: "agent",
+              enableThinking: isThinkingProvider,
             }),
             files: files,
             dyadDisableFiles: true,
@@ -1108,7 +1503,7 @@ This conversation includes one or more image attachments. When the user uploads 
             abortController,
             chatId: req.chatId,
             processResponseChunkUpdate,
-            isCodexCli,
+            isCodexCli: false,
           });
           fullResponse = result.fullResponse;
           chatMessages.push({
@@ -1122,7 +1517,7 @@ This conversation includes one or more image attachments. When the user uploads 
         }
 
         // When calling streamText, the messages need to be properly formatted for mixed content
-        const { fullStream } = await simpleStreamText({
+        let { fullStream } = await simpleStreamText({
           chatMessages,
           modelClient,
           files: files,
@@ -1130,214 +1525,254 @@ This conversation includes one or more image attachments. When the user uploads 
         });
 
         // Process the stream as before
-        try {
-          const result = await processStreamChunks({
-            fullStream,
-            fullResponse,
-            abortController,
-            chatId: req.chatId,
-            processResponseChunkUpdate,
-            isCodexCli,
-          });
-          fullResponse = result.fullResponse;
+        // Process the stream with support for stop-correct-resume
+        let correctionAttempts = 0;
+        const MAX_CORRECTION_ATTEMPTS = settings.maxCorrectionAttempts || 2;
 
-          if (
-            !abortController.signal.aborted &&
-            settings.selectedChatMode !== "ask" &&
-            hasUnclosedDyadWrite(fullResponse)
-          ) {
-            let continuationAttempts = 0;
-            while (
-              hasUnclosedDyadWrite(fullResponse) &&
-              continuationAttempts < 2 &&
-              !abortController.signal.aborted
-            ) {
-              logger.warn(
-                `Received unclosed dyad-write tag, attempting to continue, attempt #${continuationAttempts + 1}`,
-              );
-              continuationAttempts++;
+        while (true) {
+          try {
+            // Initialize monitor if enabled
+            let monitor: StreamingMonitor | FastMonitor | null = null;
+            if (settings.enableFastCorrection) {
+              monitor = new FastMonitor({
+                mode: settings.selectedChatMode || 'build',
+                workflowStep: (chat as any).workflowStep,
+              });
+            } else if (settings.enableRealtimeMonitoring && settings.routerModel) {
+              monitor = new StreamingMonitor({
+                routerModel: settings.routerModel,
+                settings,
+                appPath: getDyadAppPath(chat.app.path),
+                mode: settings.selectedChatMode || 'build',
+                workflowStep: (chat as any).workflowStep,
+              });
+            }
 
-              const { fullStream: contStream } = await simpleStreamText({
-                // Build messages: replay history then pre-fill assistant with current partial.
-                chatMessages: [
-                  ...chatMessages,
-                  { role: "assistant", content: fullResponse },
-                ],
+            const result = await processStreamChunks({
+              fullStream,
+              fullResponse,
+              abortController,
+              chatId: req.chatId,
+              processResponseChunkUpdate,
+              isCodexCli: false,
+              monitor,
+              settings,
+            });
+            fullResponse = result.fullResponse;
+
+            // Check if stream was aborted for correction
+            if (abortController.signal.aborted && (abortController as any)._correctionNeeded) {
+              if (correctionAttempts >= MAX_CORRECTION_ATTEMPTS) {
+                logger.warn("Max correction attempts reached, stopping correction loop");
+                break;
+              }
+
+              const correctionMessage = (abortController as any)._correctionNeeded;
+              const violationType = (abortController as any)._violationType;
+              logger.info(`Resuming stream with correction: ${violationType}`);
+
+              // 1. Inject correction into database (Skipped to keep invisible and avoid schema issues)
+              // System messages are not supported in messages table and we want this to be invisible in history anyway.
+
+              // 2. Update chat messages for next stream
+              chatMessages.push({
+                role: "assistant",
+                content: fullResponse, // Keep what was generated so far
+              });
+              chatMessages.push({
+                role: "system",
+                content: correctionMessage,
+              });
+
+              // 3. Reset for resume
+              correctionAttempts++;
+              abortController = new AbortController(); // Reset controller
+              activeStreams.set(req.chatId, abortController); // Update active stream map
+
+              // 4. Restart stream with new context
+              const streamResult = await simpleStreamText({
+                chatMessages,
                 modelClient,
                 files: files,
+                tools: combineToolSets(webSearchTools),
               });
-              for await (const part of contStream) {
-                // If the stream was aborted, exit early
-                if (abortController.signal.aborted) {
-                  logger.log(`Stream for chat ${req.chatId} was aborted`);
-                  break;
-                }
-                if (part.type !== "text-delta") continue; // ignore reasoning for continuation
-                fullResponse += part.text;
-                fullResponse = cleanFullResponse(fullResponse);
-                fullResponse = await processResponseChunkUpdate({
-                  fullResponse,
-                });
+              fullStream = streamResult.fullStream;
+
+              // Loop continues to process new stream
+              continue;
+            }
+
+            // If normal finish or aborted without correction, break loop
+            break;
+          } catch (error) {
+            throw error;
+          }
+        }
+
+        if (
+          !abortController.signal.aborted &&
+          settings.selectedChatMode !== "ask" &&
+          hasUnclosedDyadWrite(fullResponse)
+        ) {
+          let continuationAttempts = 0;
+          while (
+            hasUnclosedDyadWrite(fullResponse) &&
+            continuationAttempts < 2 &&
+            !abortController.signal.aborted
+          ) {
+            logger.warn(
+              `Received unclosed dyad-write tag, attempting to continue, attempt #${continuationAttempts + 1}`,
+            );
+            continuationAttempts++;
+
+            const { fullStream: contStream } = await simpleStreamText({
+              // Build messages: replay history then pre-fill assistant with current partial.
+              chatMessages: [
+                ...chatMessages,
+                { role: "assistant", content: fullResponse },
+              ],
+              modelClient,
+              files: files,
+            });
+            for await (const part of contStream) {
+              // If the stream was aborted, exit early
+              if (abortController.signal.aborted) {
+                logger.log(`Stream for chat ${req.chatId} was aborted`);
+                break;
               }
+              if (part.type !== "text-delta") continue; // ignore reasoning for continuation
+              fullResponse += part.text;
+              fullResponse = cleanFullResponse(fullResponse);
+              fullResponse = await processResponseChunkUpdate({
+                fullResponse,
+              });
             }
           }
-          const addDependencies = getDyadAddDependencyTags(fullResponse);
-          if (
-            !abortController.signal.aborted &&
-            // If there are dependencies, we don't want to auto-fix problems
-            // because there's going to be type errors since the packages aren't
-            // installed yet.
-            addDependencies.length === 0 &&
-            settings.enableAutoFixProblems &&
-            settings.selectedChatMode !== "ask"
-          ) {
-            try {
-              // IF auto-fix is enabled
-              let problemReport = await generateProblemReport({
+        }
+        const addDependencies = getDyadAddDependencyTags(fullResponse);
+        if (
+          !abortController.signal.aborted &&
+          // If there are dependencies, we don't want to auto-fix problems
+          // because there's going to be type errors since the packages aren't
+          // installed yet.
+          addDependencies.length === 0 &&
+          settings.enableAutoFixProblems &&
+          settings.selectedChatMode !== "ask"
+        ) {
+          try {
+            // IF auto-fix is enabled
+            let problemReport = await generateProblemReport({
+              fullResponse,
+              appPath: getDyadAppPath(updatedChat.app.path),
+            });
+
+            let autoFixAttempts = 0;
+            const originalFullResponse = fullResponse;
+            const previousAttempts: ModelMessage[] = [];
+            while (
+              problemReport.problems.length > 0 &&
+              autoFixAttempts < 2 &&
+              !abortController.signal.aborted
+            ) {
+              fullResponse += `<dyad-problem-report summary="${problemReport.problems.length} problems">
+${problemReport.problems
+                  .map(
+                    (problem) =>
+                      `<problem file="${escapeXml(problem.file)}" line="${problem.line}" column="${problem.column}" code="${problem.code}">${escapeXml(problem.message)}</problem>`,
+                  )
+                  .join("\n")}
+</dyad-problem-report>`;
+
+              logger.info(
+                `Attempting to auto-fix problems, attempt #${autoFixAttempts + 1}`,
+              );
+              autoFixAttempts++;
+              const problemFixPrompt = createProblemFixPrompt(problemReport);
+
+              const virtualFileSystem = new AsyncVirtualFileSystem(
+                getDyadAppPath(updatedChat.app.path),
+                {
+                  fileExists: (fileName: string) => fileExists(fileName),
+                  readFile: (fileName: string) => readFileWithCache(fileName),
+                },
+              );
+              const writeTags = getDyadWriteTags(fullResponse);
+              const renameTags = getDyadRenameTags(fullResponse);
+              const deletePaths = getDyadDeleteTags(fullResponse);
+              virtualFileSystem.applyResponseChanges({
+                deletePaths,
+                renameTags,
+                writeTags,
+              });
+
+              const { formattedOutput: codebaseInfo, files } =
+                await extractCodebase({
+                  appPath,
+                  chatContext,
+                  virtualFileSystem,
+                });
+              const { modelClient } = await getModelClient(
+                settings.selectedModel,
+                settings,
+                appPath,
+              );
+
+              const { fullStream } = await simpleStreamText({
+                modelClient,
+                files: files,
+                chatMessages: [
+                  ...chatMessages.map((msg, index) => {
+                    if (
+                      index === 0 &&
+                      msg.role === "user" &&
+                      typeof msg.content === "string" &&
+                      msg.content.startsWith(CODEBASE_PROMPT_PREFIX)
+                    ) {
+                      return {
+                        role: "user",
+                        content: createCodebasePrompt(codebaseInfo),
+                      } as const;
+                    }
+                    return msg;
+                  }),
+                  {
+                    role: "assistant",
+                    content: removeNonEssentialTags(originalFullResponse),
+                  },
+                  ...previousAttempts,
+                  { role: "user", content: problemFixPrompt },
+                ],
+              });
+              previousAttempts.push({
+                role: "user",
+                content: problemFixPrompt,
+              });
+              const result = await processStreamChunks({
+                fullStream,
+                fullResponse,
+                abortController,
+                chatId: req.chatId,
+                processResponseChunkUpdate,
+                isCodexCli: false,
+              });
+              fullResponse = result.fullResponse;
+              previousAttempts.push({
+                role: "assistant",
+                content: removeNonEssentialTags(result.incrementalResponse),
+              });
+
+              problemReport = await generateProblemReport({
                 fullResponse,
                 appPath: getDyadAppPath(updatedChat.app.path),
               });
-
-              let autoFixAttempts = 0;
-              const originalFullResponse = fullResponse;
-              const previousAttempts: ModelMessage[] = [];
-              while (
-                problemReport.problems.length > 0 &&
-                autoFixAttempts < 2 &&
-                !abortController.signal.aborted
-              ) {
-                fullResponse += `<dyad-problem-report summary="${problemReport.problems.length} problems">
-${problemReport.problems
-  .map(
-    (problem) =>
-      `<problem file="${escapeXml(problem.file)}" line="${problem.line}" column="${problem.column}" code="${problem.code}">${escapeXml(problem.message)}</problem>`,
-  )
-  .join("\n")}
-</dyad-problem-report>`;
-
-                logger.info(
-                  `Attempting to auto-fix problems, attempt #${autoFixAttempts + 1}`,
-                );
-                autoFixAttempts++;
-                const problemFixPrompt = createProblemFixPrompt(problemReport);
-
-                const virtualFileSystem = new AsyncVirtualFileSystem(
-                  getDyadAppPath(updatedChat.app.path),
-                  {
-                    fileExists: (fileName: string) => fileExists(fileName),
-                    readFile: (fileName: string) => readFileWithCache(fileName),
-                  },
-                );
-                const writeTags = getDyadWriteTags(fullResponse);
-                const renameTags = getDyadRenameTags(fullResponse);
-                const deletePaths = getDyadDeleteTags(fullResponse);
-                virtualFileSystem.applyResponseChanges({
-                  deletePaths,
-                  renameTags,
-                  writeTags,
-                });
-
-                const { formattedOutput: codebaseInfo, files } =
-                  await extractCodebase({
-                    appPath,
-                    chatContext,
-                    virtualFileSystem,
-                  });
-                const { modelClient } = await getModelClient(
-                  settings.selectedModel,
-                  settings,
-                  appPath,
-                );
-
-                const { fullStream } = await simpleStreamText({
-                  modelClient,
-                  files: files,
-                  chatMessages: [
-                    ...chatMessages.map((msg, index) => {
-                      if (
-                        index === 0 &&
-                        msg.role === "user" &&
-                        typeof msg.content === "string" &&
-                        msg.content.startsWith(CODEBASE_PROMPT_PREFIX)
-                      ) {
-                        return {
-                          role: "user",
-                          content: createCodebasePrompt(codebaseInfo),
-                        } as const;
-                      }
-                      return msg;
-                    }),
-                    {
-                      role: "assistant",
-                      content: removeNonEssentialTags(originalFullResponse),
-                    },
-                    ...previousAttempts,
-                    { role: "user", content: problemFixPrompt },
-                  ],
-                });
-                previousAttempts.push({
-                  role: "user",
-                  content: problemFixPrompt,
-                });
-                const result = await processStreamChunks({
-                  fullStream,
-                  fullResponse,
-                  abortController,
-                  chatId: req.chatId,
-                  processResponseChunkUpdate,
-                  isCodexCli,
-                });
-                fullResponse = result.fullResponse;
-                previousAttempts.push({
-                  role: "assistant",
-                  content: removeNonEssentialTags(result.incrementalResponse),
-                });
-
-                problemReport = await generateProblemReport({
-                  fullResponse,
-                  appPath: getDyadAppPath(updatedChat.app.path),
-                });
-              }
-            } catch (error) {
-              logger.error(
-                "Error generating problem report or auto-fixing:",
-                settings.enableAutoFixProblems,
-                error,
-              );
             }
+          } catch (error) {
+            logger.error(
+              "Error generating problem report or auto-fixing:",
+              settings.enableAutoFixProblems,
+              error,
+            );
           }
-        } catch (streamError) {
-          // Check if this was an abort error
-          if (abortController.signal.aborted) {
-            const chatId = req.chatId;
-            const partialResponse = partialResponses.get(req.chatId);
-            // If we have a partial response, save it to the database
-            if (partialResponse) {
-              try {
-                // Update the placeholder assistant message with the partial content and cancellation note
-                await db
-                  .update(messages)
-                  .set({
-                    content: `${partialResponse}
-
-[Response cancelled by user]`,
-                  })
-                  .where(eq(messages.id, placeholderAssistantMessage.id));
-
-                logger.log(
-                  `Updated cancelled response for placeholder message ${placeholderAssistantMessage.id} in chat ${chatId}`,
-                );
-                partialResponses.delete(req.chatId);
-              } catch (error) {
-                logger.error(
-                  `Error saving partial response for chat ${chatId}:`,
-                  error,
-                );
-              }
-            }
-            return req.chatId;
-          }
-          throw streamError;
         }
       }
 
@@ -1358,7 +1793,10 @@ ${problemReport.problems
         // Update the placeholder assistant message with the full response
         await db
           .update(messages)
-          .set({ content: fullResponse })
+          .set({
+            content: fullResponse,
+            model: targetModel?.name
+          })
           .where(eq(messages.id, placeholderAssistantMessage.id));
         const settings = readSettings();
         if (
@@ -1387,6 +1825,38 @@ ${problemReport.problems
             chatId: req.chatId,
             messages: chat!.messages,
           });
+
+          // Handle correction requests from router model
+          if (status.needsCorrection && status.correctivePrompt) {
+            logger.info('Response needs correction - router provided guidance');
+
+            // Send correction notification to user
+            safeSend(event.sender, "chat:response:chunk", {
+              chatId: req.chatId,
+              messages: [
+                ...chat!.messages,
+                {
+                  id: -1, // Temporary ID for system message
+                  chatId: req.chatId,
+                  role: 'user',
+                  content: `[System: Correcting response]\n\n${status.correctivePrompt}`,
+                  createdAt: new Date().toISOString(),
+                  model: null,
+                } as any,
+              ],
+            });
+
+            // Insert corrective instruction as user message
+            const [correctionMessage] = await db.insert(messages).values({
+              chatId: req.chatId,
+              role: 'user',
+              content: `${status.correctivePrompt}\n\nPlease fix your previous response according to these instructions.`,
+            }).returning();
+
+            logger.info('Correction message inserted, continuing stream with guidance');
+            // The next iteration will pick up the correction in context
+            // No need to explicitly retry - model will see correction in message history
+          }
 
           if (status.error) {
             safeSend(event.sender, "chat:response:error", {
@@ -1434,6 +1904,37 @@ ${problemReport.problems
       // Return the chat ID for backwards compatibility
       return req.chatId;
     } catch (error) {
+      // Check if this was an abort error
+      if (abortController.signal.aborted) {
+        const chatId = req.chatId;
+        const partialResponse = partialResponses.get(req.chatId);
+        // If we have a partial response, save it to the database
+        if (partialResponse) {
+          try {
+            // Update the placeholder assistant message with the partial content and cancellation note
+            await db
+              .update(messages)
+              .set({
+                content: `${partialResponse}
+
+[Response cancelled by user]`,
+              })
+              .where(eq(messages.id, placeholderAssistantMessage.id));
+
+            logger.log(
+              `Updated cancelled response for placeholder message ${placeholderAssistantMessage.id} in chat ${chatId}`,
+            );
+            partialResponses.delete(req.chatId);
+          } catch (saveError) {
+            logger.error(
+              `Error saving partial response for chat ${chatId}:`,
+              saveError,
+            );
+          }
+        }
+        return req.chatId;
+      }
+
       logger.error("Error calling LLM:", error);
       safeSend(event.sender, "chat:response:error", {
         chatId: req.chatId,
@@ -1469,7 +1970,7 @@ ${problemReport.problems
     // Clean up uploads state for this chat
     try {
       FileUploadsState.getInstance().clear(chatId);
-    } catch {}
+    } catch { }
 
     return true;
   });
@@ -1722,7 +2223,7 @@ function createWebSearchTool({
   return {
     "web-search": {
       description:
-        "Use this to search the live web (via Gemini 2.5 Flash) whenever you need current information, recent docs, or factual updates.",
+        "Search the web for CONCEPTUAL documentation and general information. DO NOT use for: API documentation (use curl instead), JSON data (use curl instead), package info (use npm view instead), or local codebase exploration (use ls/grep/cat instead). ONLY use for conceptual guides, tutorials, best practices, and information that cannot be fetched directly via HTTP or command-line tools.",
       inputSchema: z.object({
         query: z
           .string()

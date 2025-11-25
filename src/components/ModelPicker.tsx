@@ -28,11 +28,34 @@ import { PriceBadge } from "@/components/PriceBadge";
 import { TURBO_MODELS } from "@/ipc/shared/language_model_constants";
 import { cn } from "@/lib/utils";
 
-export function ModelPicker() {
+export interface ModelPickerProps {
+  onModelSelect?: (model: LargeLanguageModel) => void;
+  selectedModel?: LargeLanguageModel;
+}
+
+export function ModelPicker({
+  onModelSelect: customOnModelSelect,
+  selectedModel: customSelectedModel,
+}: ModelPickerProps) {
   const { settings, updateSettings } = useSettings();
-  const onModelSelect = (model: LargeLanguageModel) => {
-    updateSettings({ selectedModel: model });
+
+  const handleModelSelect = (model: LargeLanguageModel) => {
+    if (customOnModelSelect) {
+      customOnModelSelect(model);
+    } else {
+      updateSettings({ selectedModel: model });
+    }
   };
+
+  // Use custom selected model if provided, otherwise fall back to settings
+  const activeModel = customSelectedModel || settings?.selectedModel;
+
+  if (!settings || !activeModel) {
+    return null;
+  }
+
+  // Use activeModel instead of selectedModel throughout the component
+  const selectedModel = activeModel;
 
   const [open, setOpen] = useState(false);
 
@@ -110,22 +133,22 @@ export function ModelPicker() {
   const autoModels =
     !loading && modelsByProviders && modelsByProviders["auto"]
       ? modelsByProviders["auto"].filter((model) => {
-          if (
-            settings &&
-            !isDyadProEnabled(settings) &&
-            ["turbo", "value"].includes(model.apiName)
-          ) {
-            return false;
-          }
-          if (
-            settings &&
-            isDyadProEnabled(settings) &&
-            model.apiName === "free"
-          ) {
-            return false;
-          }
-          return true;
-        })
+        if (
+          settings &&
+          !isDyadProEnabled(settings) &&
+          ["turbo", "value"].includes(model.apiName)
+        ) {
+          return false;
+        }
+        if (
+          settings &&
+          isDyadProEnabled(settings) &&
+          model.apiName === "free"
+        ) {
+          return false;
+        }
+        return true;
+      })
       : [];
 
   // Determine availability of local models
@@ -134,10 +157,7 @@ export function ModelPicker() {
   const hasLMStudioModels =
     !lmStudioLoading && !lmStudioError && lmStudioModels.length > 0;
 
-  if (!settings) {
-    return null;
-  }
-  const selectedModel = settings?.selectedModel;
+
   const isSmartAutoEnabled =
     settings.enableProSmartFilesContextMode && isDyadProEnabled(settings);
   const modelDisplayName = getModelDisplayName();
@@ -145,8 +165,8 @@ export function ModelPicker() {
   const providerEntries =
     !loading && modelsByProviders
       ? Object.entries(modelsByProviders).filter(
-          ([providerId]) => providerId !== "auto",
-        )
+        ([providerId]) => providerId !== "auto",
+      )
       : [];
   const primaryProviders = providerEntries.filter(([providerId, models]) => {
     if (models.length === 0) return false;
@@ -217,12 +237,12 @@ export function ModelPicker() {
                       <DropdownMenuItem
                         className={
                           selectedModel.provider === "auto" &&
-                          selectedModel.name === model.apiName
+                            selectedModel.name === model.apiName
                             ? "bg-secondary"
                             : ""
                         }
                         onClick={() => {
-                          onModelSelect({
+                          handleModelSelect({
                             name: model.apiName,
                             provider: "auto",
                           });
@@ -331,14 +351,14 @@ export function ModelPicker() {
                           <DropdownMenuItem
                             className={
                               selectedModel.provider === providerId &&
-                              selectedModel.name === model.apiName
+                                selectedModel.name === model.apiName
                                 ? "bg-secondary"
                                 : ""
                             }
                             onClick={() => {
                               const customModelId =
                                 model.type === "custom" ? model.id : undefined;
-                              onModelSelect({
+                              handleModelSelect({
                                 name: model.apiName,
                                 provider: providerId,
                                 customModelId,
@@ -413,7 +433,7 @@ export function ModelPicker() {
                                 <DropdownMenuItem
                                   className={
                                     selectedModel.provider === providerId &&
-                                    selectedModel.name === model.apiName
+                                      selectedModel.name === model.apiName
                                       ? "bg-secondary"
                                       : ""
                                   }
@@ -422,7 +442,7 @@ export function ModelPicker() {
                                       model.type === "custom"
                                         ? model.id
                                         : undefined;
-                                    onModelSelect({
+                                    handleModelSelect({
                                       name: model.apiName,
                                       provider: providerId,
                                       customModelId,
@@ -524,12 +544,12 @@ export function ModelPicker() {
                       key={`ollama-${model.modelName}`}
                       className={
                         selectedModel.provider === "ollama" &&
-                        selectedModel.name === model.modelName
+                          selectedModel.name === model.modelName
                           ? "bg-secondary"
                           : ""
                       }
                       onClick={() => {
-                        onModelSelect({
+                        handleModelSelect({
                           name: model.modelName,
                           provider: "ollama",
                         });
@@ -605,12 +625,12 @@ export function ModelPicker() {
                       key={`lmstudio-${model.modelName}`}
                       className={
                         selectedModel.provider === "lmstudio" &&
-                        selectedModel.name === model.modelName
+                          selectedModel.name === model.modelName
                           ? "bg-secondary"
                           : ""
                       }
                       onClick={() => {
-                        onModelSelect({
+                        handleModelSelect({
                           name: model.modelName,
                           provider: "lmstudio",
                         });

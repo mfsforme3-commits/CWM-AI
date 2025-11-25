@@ -26,6 +26,7 @@ import {
   chatInputValueAtom,
   chatMessagesByIdAtom,
   selectedChatIdAtom,
+  chatMetadataByIdAtom,
 } from "@/atoms/chatAtoms";
 import { atom, useAtom, useSetAtom, useAtomValue } from "jotai";
 import { useStreamChat } from "@/hooks/useStreamChat";
@@ -88,6 +89,11 @@ export function ChatInput({ chatId }: { chatId?: number }) {
     selectedComponentPreviewAtom,
   );
   const { checkProblems } = useCheckProblems(appId);
+  const chatMetadataById = useAtomValue(chatMetadataByIdAtom);
+  const chat = chatId ? chatMetadataById.get(chatId) : null;
+  const isWorkflowActive = chat?.workflowStatus === "active";
+  const workflowStep = chat?.workflowStep;
+
   // Use the attachments hook
   const {
     attachments,
@@ -305,7 +311,11 @@ export function ChatInput({ chatId }: { chatId?: number }) {
               onChange={setInputValue}
               onSubmit={handleSubmit}
               onPaste={handlePaste}
-              placeholder="Ask Dyad to build..."
+              placeholder={
+                  isWorkflowActive 
+                    ? `[${workflowStep?.toUpperCase()}] Describe tasks or click Next Step...` 
+                    : "Ask Dyad to build..."
+              }
               excludeCurrentApp={true}
             />
 

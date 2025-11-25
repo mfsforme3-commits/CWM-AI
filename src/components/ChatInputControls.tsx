@@ -4,6 +4,7 @@ import { ProModeSelector } from "./ProModeSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { McpToolsPicker } from "@/components/McpToolsPicker";
 import { useSettings } from "@/hooks/useSettings";
+import { CompactContextButton } from "./CompactContextButton";
 
 export function ChatInputControls({
   showContextFilesPicker = false,
@@ -32,6 +33,7 @@ export function ChatInputControls({
           <div className="w-0.5"></div>
         </>
       )}
+      <CompactContextButton />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   chatMessagesByIdAtom,
   chatStreamCountByIdAtom,
   isStreamingByIdAtom,
+  chatMetadataByIdAtom,
 } from "../atoms/chatAtoms";
 import { IpcClient } from "@/ipc/ipc_client";
 
@@ -28,6 +29,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const messagesById = useAtomValue(chatMessagesByIdAtom);
   const setMessagesById = useSetAtom(chatMessagesByIdAtom);
+  const setChatMetadataById = useSetAtom(chatMetadataByIdAtom);
   const [isVersionPaneOpen, setIsVersionPaneOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const streamCountById = useAtomValue(chatStreamCountByIdAtom);
@@ -126,7 +128,12 @@ export function ChatPanel({
       next.set(chatId, chat.messages);
       return next;
     });
-  }, [chatId, setMessagesById]);
+    setChatMetadataById((prev) => {
+      const next = new Map(prev);
+      next.set(chatId, chat);
+      return next;
+    });
+  }, [chatId, setMessagesById, setChatMetadataById]);
 
   useEffect(() => {
     fetchChatMessages();

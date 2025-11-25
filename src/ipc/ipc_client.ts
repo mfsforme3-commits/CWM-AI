@@ -563,6 +563,18 @@ export class IpcClient {
     }
   }
 
+  public async execCommand(
+    appId: number,
+    command: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    try {
+      return await this.ipcRenderer.invoke("exec-command", { appId, command });
+    } catch (error) {
+      showError(error);
+      throw error;
+    }
+  }
+
   // Get allow-listed environment variables
   public async getEnvVars(): Promise<Record<string, string | undefined>> {
     try {
@@ -1327,6 +1339,6 @@ export class IpcClient {
   }
 
   public cancelHelpChat(sessionId: string): void {
-    this.ipcRenderer.invoke("help:chat:cancel", sessionId).catch(() => {});
+    this.ipcRenderer.invoke("help:chat:cancel", sessionId).catch(() => { });
   }
 }

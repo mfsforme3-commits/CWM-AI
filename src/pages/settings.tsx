@@ -5,6 +5,7 @@ import ConfirmationDialog from "@/components/ConfirmationDialog";
 import { IpcClient } from "@/ipc/ipc_client";
 import { showSuccess, showError } from "@/lib/toast";
 import { AutoApproveSwitch } from "@/components/AutoApproveSwitch";
+import { AutoApproveTerminalCommandsSwitch } from "@/components/AutoApproveTerminalCommandsSwitch";
 import { TelemetrySwitch } from "@/components/TelemetrySwitch";
 import { MaxChatTurnsSelector } from "@/components/MaxChatTurnsSelector";
 import { ThinkingBudgetSelector } from "@/components/ThinkingBudgetSelector";
@@ -26,6 +27,8 @@ import { NeonIntegration } from "@/components/NeonIntegration";
 import { RuntimeModeSelector } from "@/components/RuntimeModeSelector";
 import { NodePathSelector } from "@/components/NodePathSelector";
 import { ToolsMcpSettings } from "@/components/settings/ToolsMcpSettings";
+import { TaskBasedModelsSelector } from "@/components/TaskBasedModelsSelector";
+import { UltrathinkModelSelector } from "@/components/UltrathinkModelSelector";
 
 export default function SettingsPage() {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
@@ -244,11 +247,10 @@ export function GeneralSettings({ appVersion }: { appVersion: string | null }) {
                 className={`
                 px-4 py-1.5 text-sm font-medium rounded-md
                 transition-all duration-200
-                ${
-                  theme === option
+                ${theme === option
                     ? "bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm"
                     : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
-                }
+                  }
               `}
               >
                 {option.charAt(0).toUpperCase() + option.slice(1)}
@@ -310,6 +312,13 @@ export function WorkflowSettings() {
           This will automatically fix TypeScript errors.
         </div>
       </div>
+
+      <div className="space-y-1 mt-4">
+        <AutoApproveTerminalCommandsSwitch />
+        <div className="text-sm text-gray-500 dark:text-gray-400">
+          This will automatically run terminal commands without confirmation.
+        </div>
+      </div>
     </div>
   );
 }
@@ -329,6 +338,14 @@ export function AISettings() {
 
       <div className="mt-4">
         <MaxChatTurnsSelector />
+      </div>
+
+      <div className="mt-4">
+        <TaskBasedModelsSelector />
+      </div>
+
+      <div className="mt-4">
+        <UltrathinkModelSelector />
       </div>
     </div>
   );

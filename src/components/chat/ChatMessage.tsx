@@ -218,6 +218,11 @@ const ChatMessage = memo(({ message, isLastMessage }: ChatMessageProps) => {
               <Clock className="h-3 w-3" />
               <span>{formatTimestamp(message.createdAt)}</span>
             </div>
+          {message.role === "assistant" && message.model && (
+              <div className="flex items-center space-x-1 bg-blue-50/50 dark:bg-blue-900/20 px-1.5 py-0.5 rounded text-[9px] font-mono text-blue-600 dark:text-blue-300 border border-blue-100 dark:border-blue-800/50 shadow-[0_0_8px_rgba(59,130,246,0.2)]">
+                 <span>{message.model}</span>
+              </div>
+            )}
             {messageVersion && messageVersion.message && (
               <div className="flex items-center space-x-1">
                 <GitCommit className="h-3 w-3" />
@@ -300,6 +305,7 @@ const ChatMessage = memo(({ message, isLastMessage }: ChatMessageProps) => {
     if (nextProps.message.createdAt !== prevProps.message.createdAt) return false;
     if (nextProps.message.requestId !== prevProps.message.requestId) return false;
     if (nextProps.message.commitHash !== prevProps.message.commitHash) return false;
+    if (nextProps.message.model !== prevProps.message.model) return false;
     
     return true;
 });
