@@ -2,6 +2,7 @@ import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { type VariantProps, cva } from "class-variance-authority";
 import { Menu } from "lucide-react";
+import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -185,10 +186,10 @@ function Sidebar({
       data-slot="sidebar"
     >
       {/* This is what handles the sidebar gap */}
-      <div
+      <motion.div
         data-slot="sidebar-gap"
         className={cn(
-          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+          "relative w-(--sidebar-width) bg-transparent",
           "group-data-[collapsible=offcanvas]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
@@ -196,10 +197,10 @@ function Sidebar({
             : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
         )}
       />
-      <div
+      <motion.div
         data-slot="sidebar-container"
         className={cn(
-          "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width) transition-[left,right,width,transform] duration-200 ease-linear",
+          "fixed inset-y-0 z-10 flex h-svh w-(--sidebar-width)",
           side === "left"
             ? "left-0 translate-x-0 group-data-[collapsible=offcanvas]:translate-x-[-100%]"
             : "right-0 translate-x-0 group-data-[collapsible=offcanvas]:translate-x-[100%]",
@@ -211,14 +212,16 @@ function Sidebar({
         )}
         {...props}
       >
-        <div
+        <motion.div
+          layout
+          transition={{ duration: 0.3, ease: "easeInOut" }}
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className="bg-sidebar group-data-[variant=floating]:border-sidebar-border flex h-full w-full flex-col group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:shadow-sm"
         >
           {children}
-        </div>
-      </div>
+        </motion.div>
+      </motion.div>
     </div>
   );
 }
