@@ -7,12 +7,14 @@ import { providerSettingsRoute } from "./routes/settings/providers/$provider";
 import { appDetailsRoute } from "./routes/app-details";
 import { hubRoute } from "./routes/hub";
 import { libraryRoute } from "./routes/library";
+import { claudeRoute } from "./routes/claude";
 
 const routeTree = rootRoute.addChildren([
   homeRoute,
   hubRoute,
   libraryRoute,
   chatRoute,
+  claudeRoute,
   appDetailsRoute,
   settingsRoute.addChildren([providerSettingsRoute]),
 ]);
